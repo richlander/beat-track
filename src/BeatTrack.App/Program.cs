@@ -200,15 +200,26 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
     var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
     foreach (var scrobble in scrobbles)
     {
-        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(scrobble.ArtistName);
+        // Pre-clean scrobble artist names: strip channel suffixes that YouTube
+        // scrobblers sometimes leave (e.g. "BelleSebastianVEVO" → "BelleSebastian")
+        var cleaned = ArtistNameMatcher.CleanChannelName(scrobble.ArtistName);
+        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
         lastFmWeights.TryGetValue(canonical, out var current);
         lastFmWeights[canonical] = current + 1;
     }
 
+    // Merge Last.fm weight variants (e.g. "bellesebastian" from cleaned VEVO scrobbles
+    // should merge into "belle and sebastian" from normal scrobbles)
+    lastFmWeights = ArtistNameMatcher.MergeWeights(lastFmWeights);
+
     var lastFmSlice = new BeatTrackSlice("Last.fm", lastFmWeights);
+
+    // Build matcher from cleaned Last.fm artist names for resolving YouTube channel names
+    var matcher = new ArtistNameMatcher(lastFmWeights.Keys);
 
     // Build YouTube slice from music-candidate watch events
     var ytWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    var matcherResolutions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     foreach (var watch in youTubeSnapshot.WatchEvents)
     {
         if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
@@ -224,17 +235,28 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
         else if (watch.MusicMatchReason is "AutoMusicChannel" && !string.IsNullOrWhiteSpace(watch.ChannelName))
         {
             artistName = watch.ChannelName;
-            if (artistName.EndsWith(" - Topic", StringComparison.OrdinalIgnoreCase))
-                artistName = artistName[..^8].Trim();
-            else if (artistName.EndsWith("VEVO", StringComparison.OrdinalIgnoreCase))
-                artistName = artistName[..^4].Trim();
         }
 
         if (artistName is not null)
         {
-            var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
-            ytWeights.TryGetValue(canonical, out var current);
-            ytWeights[canonical] = current + 1;
+            // Try to resolve to a known Last.fm artist name
+            var resolved = matcher.TryResolve(artistName);
+            if (resolved is not null)
+            {
+                if (!matcherResolutions.ContainsKey(artistName))
+                {
+                    matcherResolutions[artistName] = resolved;
+                }
+
+                ytWeights.TryGetValue(resolved, out var current);
+                ytWeights[resolved] = current + 1;
+            }
+            else
+            {
+                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
+                ytWeights.TryGetValue(canonical, out var current);
+                ytWeights[canonical] = current + 1;
+            }
         }
     }
 
@@ -242,6 +264,11 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
 
     Console.WriteLine($"lastfm_slice: {lastFmSlice.ArtistWeights.Count} artists");
     Console.WriteLine($"youtube_slice: {ytSlice.ArtistWeights.Count} artists");
+    Console.WriteLine($"matcher_resolutions: {matcherResolutions.Count}");
+    foreach (var (original, resolved) in matcherResolutions.OrderBy(static kvp => kvp.Value, StringComparer.OrdinalIgnoreCase))
+    {
+        Console.WriteLine($"  {original} -> {resolved}");
+    }
     Console.WriteLine();
 
     var comparison = BeatTrackSliceComparer.Compare(lastFmSlice, ytSlice);
