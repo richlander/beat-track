@@ -26,7 +26,7 @@ public sealed class YouTubeTakeoutClient
                 continue;
             }
 
-            var columns = ParseCsvLine(line);
+            var columns = CsvLineParser.ParseLine(line);
             if (columns.Count < 5)
             {
                 continue;
@@ -95,39 +95,4 @@ public sealed class YouTubeTakeoutClient
 
     private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static List<string> ParseCsvLine(string line)
-    {
-        var result = new List<string>();
-        var current = new System.Text.StringBuilder();
-        var inQuotes = false;
-
-        for (var i = 0; i < line.Length; i++)
-        {
-            var ch = line[i];
-            if (ch == '"')
-            {
-                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                {
-                    current.Append('"');
-                    i++;
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-            }
-            else if (ch == ',' && !inQuotes)
-            {
-                result.Add(current.ToString());
-                current.Clear();
-            }
-            else
-            {
-                current.Append(ch);
-            }
-        }
-
-        result.Add(current.ToString());
-        return result;
-    }
 }

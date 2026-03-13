@@ -5,4 +5,6 @@
   <Project Path="src/BeatTrack.LastFm.App/BeatTrack.LastFm.App.csproj" />
   <Project Path="tests/BeatTrack.LastFm.Tests/BeatTrack.LastFm.Tests.csproj" />
   <Project Path="src/BeatTrack.LastFm/BeatTrack.LastFm.csproj" />
+  <Project Path="src/BeatTrack.Discogs/BeatTrack.Discogs.csproj" />
+  <Project Path="src/BeatTrack.Discogs.App/BeatTrack.Discogs.App.csproj" />
 </Solution>
