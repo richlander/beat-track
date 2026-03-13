@@ -181,6 +181,115 @@ foreach (var release in multiSourceReleases.OrderBy(static r => r.ArtistCanonica
     Console.WriteLine($"  {release.ArtistCanonicalName} - {release.Title} [{sources}]");
 }
 
+// === MBID cache + Gap analysis ===
+
+var cacheDir = Environment.GetEnvironmentVariable("BEAT_TRACK_CACHE_DIR")
+    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "cache");
+
+var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
+var mbidCache = new MbidCache(mbidCachePath);
+Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
+
+// Seed cache from Last.fm snapshot MBIDs
+if (lastFmSnapshot is not null)
+{
+    var added = mbidCache.AddFromLastFmSnapshot(lastFmSnapshot);
+    if (added > 0)
+    {
+        Console.WriteLine($"mbid_cache: added {added} from Last.fm snapshot");
+    }
+}
+
+// Look up MBIDs for top unified profile artists that aren't cached yet
+var uncachedArtists = profile.Artists
+    .Where(a => mbidCache.GetMbid(a.CanonicalName) is null)
+    .Select(static a => a.CanonicalName)
+    .Take(50)
+    .ToList();
+
+if (uncachedArtists.Count > 0)
+{
+    Console.Write($"mbid_lookup: resolving {uncachedArtists.Count} artists via MusicBrainz... ");
+    using var mbLookup = new MusicBrainzArtistLookup();
+    var confirmed = await mbLookup.LookupCandidatesAsync(uncachedArtists, cancellationToken: CancellationToken.None);
+
+    foreach (var result in confirmed)
+    {
+        if (result.MusicBrainzId is not null)
+        {
+            mbidCache.Set(
+                BeatTrackAnalysis.CanonicalizeArtistName(result.Query),
+                result.MusicBrainzId,
+                result.MatchedName,
+                "musicbrainz");
+        }
+    }
+
+    Console.WriteLine($"{confirmed.Count} confirmed");
+}
+
+mbidCache.Save();
+Console.WriteLine($"mbid_cache: {mbidCache.Count} total entries saved");
+
+// Collect seed artists with MBIDs for gap analysis
+var seedArtists = mbidCache.GetAll()
+    .Select(static e => (e.Mbid, e.MatchedName ?? e.CanonicalName))
+    .DistinctBy(static s => s.Mbid, StringComparer.OrdinalIgnoreCase)
+    .ToList();
+
+if (seedArtists.Count > 0)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== Gap analysis: similar artists you might be missing ===");
+    Console.WriteLine($"seed_artists: {seedArtists.Count} (with MBIDs)");
+
+    // Build a set of all known artist names + MBIDs for comparison
+    var knownCanonical = new HashSet<string>(
+        profile.Artists.Select(static a => a.CanonicalName),
+        StringComparer.OrdinalIgnoreCase);
+
+    var knownMbids = new HashSet<string>(
+        mbidCache.GetAll().Select(static e => e.Mbid),
+        StringComparer.OrdinalIgnoreCase);
+
+    using var similarLookup = new ListenBrainzSimilarArtistsLookup();
+
+    // Take top 20 seed artists to keep API calls reasonable
+    var topSeeds = seedArtists.Take(20).ToList();
+    Console.WriteLine($"querying_seeds: {topSeeds.Count} (top artists)");
+    Console.Write("  ");
+
+    var aggregated = await similarLookup.GetSimilarArtistsForMultipleAsync(
+        topSeeds,
+        progress: new Progress<string>(name => Console.Write($"{name}, ")),
+        cancellationToken: CancellationToken.None);
+
+    Console.WriteLine();
+    Console.WriteLine($"total_similar: {aggregated.Count} artists found");
+
+    // Filter to artists NOT in any of our sources (check both name and MBID)
+    var gaps = aggregated
+        .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name))
+            && !knownMbids.Contains(a.ArtistMbid))
+        .ToList();
+
+    Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
+    Console.WriteLine();
+
+    // Show top gaps — artists similar to the most seeds
+    Console.WriteLine("top_gaps (similar to multiple favorites but never listened to):");
+    foreach (var gap in gaps.Take(30))
+    {
+        var seeds = string.Join(", ", gap.SimilarToSeeds.Take(5));
+        Console.WriteLine($"  {gap.Name}  (similar to {gap.SeedCount} seeds: {seeds})");
+    }
+
+    if (gaps.Count > 30)
+    {
+        Console.WriteLine($"  ... and {gaps.Count - 30} more");
+    }
+}
+
 // === Slice comparison: Last.fm vs YouTube ===
 
 var lastFmStatsPath = Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV")
