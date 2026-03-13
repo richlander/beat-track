@@ -71,11 +71,37 @@ if (!skipMusicBrainz)
         new Progress<string>(name => Console.Write($"\r  checking: {name,-50}")));
     Console.WriteLine();
 
-    Console.WriteLine($"musicbrainz_confirmed: {confirmed.Count}");
-    foreach (var match in confirmed)
+    Console.WriteLine($"musicbrainz_name_matches: {confirmed.Count}");
+
+    // ListenBrainz popularity check: filter to artists people actually listen to
+    var mbidsToCheck = confirmed
+        .Where(static c => c.MusicBrainzId is not null)
+        .ToDictionary(static c => c.MusicBrainzId!, static c => c);
+
+    if (mbidsToCheck.Count > 0)
     {
-        knownArtists.Add(match.MatchedName ?? match.Query);
-        Console.WriteLine($"  + {match.Query} => {match.MatchedName} (score={match.Score}, mbid={match.MusicBrainzId})");
+        Console.Write("  checking ListenBrainz popularity...");
+        using var lbLookup = new ListenBrainzPopularityLookup();
+        var popularity = await lbLookup.GetArtistPopularityAsync(mbidsToCheck.Keys);
+        Console.WriteLine(" done");
+
+        var minListenCount = 50;
+        var minUserCount = 5;
+
+        Console.WriteLine();
+        Console.WriteLine($"listenbrainz_popularity (threshold: {minListenCount}+ listens, {minUserCount}+ users):");
+        foreach (var pop in popularity.OrderByDescending(static p => p.TotalListenCount))
+        {
+            var match = mbidsToCheck[pop.ArtistMbid];
+            var accepted = pop.TotalListenCount >= minListenCount && pop.TotalUserCount >= minUserCount;
+            var marker = accepted ? "+" : "-";
+            Console.WriteLine($"  {marker} {match.Query} => {match.MatchedName} (listens={pop.TotalListenCount}, users={pop.TotalUserCount}, mbid={pop.ArtistMbid})");
+
+            if (accepted)
+            {
+                knownArtists.Add(match.MatchedName ?? match.Query);
+            }
+        }
     }
 }
 
