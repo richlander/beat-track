@@ -10,6 +10,10 @@ public static class BeatTrackUnifiedProfileBuilder
         var artistRefs = new Dictionary<string, List<BeatTrackSourceReference>>(StringComparer.OrdinalIgnoreCase);
         var releaseRefs = new Dictionary<string, (string Title, string? ArtistCanonical, int? Year, List<BeatTrackSourceReference> Sources)>(StringComparer.OrdinalIgnoreCase);
 
+        // Build a set of known individual artist names from Last.fm and YouTube
+        // so we can validate Discogs collab splits
+        var knownArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         // Last.fm artists
         if (lastFmSnapshot is not null)
         {
@@ -18,6 +22,7 @@ public static class BeatTrackUnifiedProfileBuilder
                 if (!string.IsNullOrWhiteSpace(track.ArtistName))
                 {
                     AddArtist(artistRefs, track.ArtistName, BeatTrackSource.LastFm, sourceUrl: track.Url);
+                    knownArtists.Add(track.ArtistName);
                 }
             }
 
@@ -26,6 +31,7 @@ public static class BeatTrackUnifiedProfileBuilder
                 foreach (var artist in periodArtists)
                 {
                     AddArtist(artistRefs, artist.Name, BeatTrackSource.LastFm, sourceId: artist.Mbid, sourceUrl: artist.Url);
+                    knownArtists.Add(artist.Name);
                 }
             }
 
@@ -34,6 +40,7 @@ public static class BeatTrackUnifiedProfileBuilder
                 if (!string.IsNullOrWhiteSpace(track.ArtistName))
                 {
                     AddArtist(artistRefs, track.ArtistName, BeatTrackSource.LastFm, sourceUrl: track.Url);
+                    knownArtists.Add(track.ArtistName);
                 }
             }
         }
@@ -46,6 +53,7 @@ public static class BeatTrackUnifiedProfileBuilder
                 foreach (var artistName in saved.ArtistNames)
                 {
                     AddArtist(artistRefs, artistName, BeatTrackSource.YouTube);
+                    knownArtists.Add(artistName);
                 }
 
                 AddRelease(releaseRefs, saved.Title, saved.ArtistNames.FirstOrDefault(), null,
@@ -54,22 +62,38 @@ public static class BeatTrackUnifiedProfileBuilder
 
             foreach (var watch in youTubeSnapshot.WatchEvents)
             {
-                if (watch.IsMusicCandidate && !string.IsNullOrWhiteSpace(watch.ChannelName)
-                    && watch.MusicMatchReason is not null
-                    && (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal)
-                        || watch.MusicMatchReason is "AutoMusicChannel" or "MusicPlatform"))
+                if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
                 {
-                    // Extract the actual artist name from KnownArtist matches, use channel name for auto-channels
-                    var artistName = watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal)
-                        ? watch.MusicMatchReason["KnownArtist:".Length..]
-                        : watch.ChannelName;
+                    continue;
+                }
 
+                if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
+                {
+                    var artistName = watch.MusicMatchReason["KnownArtist:".Length..];
                     AddArtist(artistRefs, artistName, BeatTrackSource.YouTube, sourceUrl: watch.Url);
+                    knownArtists.Add(artistName);
+                }
+                else if (watch.MusicMatchReason is "AutoMusicChannel" or "MusicPlatform"
+                    && !string.IsNullOrWhiteSpace(watch.ChannelName))
+                {
+                    AddArtist(artistRefs, watch.ChannelName, BeatTrackSource.YouTube, sourceUrl: watch.Url);
+                }
+
+                // Extract featured/collab artists only from confirmed music content
+                // (KnownArtist or AutoMusicChannel — not heuristic or platform matches)
+                if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal)
+                    || watch.MusicMatchReason is "AutoMusicChannel")
+                {
+                    var titleArtists = ArtistNameSplitter.ExtractArtistsFromTitle(watch.Title);
+                    foreach (var extracted in titleArtists)
+                    {
+                        AddArtist(artistRefs, extracted, BeatTrackSource.YouTube, sourceUrl: watch.Url);
+                    }
                 }
             }
         }
 
-        // Discogs artists and releases
+        // Discogs artists and releases (split compound names using known artist validation)
         if (discogsSnapshot is not null)
         {
             foreach (var release in discogsSnapshot.Releases)
@@ -80,7 +104,12 @@ public static class BeatTrackUnifiedProfileBuilder
                         ? $"https://www.discogs.com/release/{release.DiscogsReleaseId}"
                         : null;
 
-                    AddArtist(artistRefs, release.ArtistName, BeatTrackSource.Discogs, sourceUrl: discogsUrl);
+                    var individualArtists = ArtistNameSplitter.SplitCollaboration(release.ArtistName, knownArtists);
+                    foreach (var artist in individualArtists)
+                    {
+                        AddArtist(artistRefs, artist, BeatTrackSource.Discogs, sourceUrl: discogsUrl);
+                    }
+
                     AddRelease(releaseRefs, release.Title, release.ArtistName, release.ReleasedYear,
                         BeatTrackSource.Discogs, sourceId: release.DiscogsReleaseId?.ToString(), sourceUrl: discogsUrl);
                 }
