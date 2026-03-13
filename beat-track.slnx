@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/BeatTrack.YouTube/BeatTrack.YouTube.csproj" />
+  <Project Path="src/BeatTrack.YouTube.App/BeatTrack.YouTube.App.csproj" />
+  <Project Path="src/BeatTrack.Core/BeatTrack.Core.csproj" />
+  <Project Path="src/BeatTrack.LastFm.App/BeatTrack.LastFm.App.csproj" />
+  <Project Path="tests/BeatTrack.LastFm.Tests/BeatTrack.LastFm.Tests.csproj" />
+  <Project Path="src/BeatTrack.LastFm/BeatTrack.LastFm.csproj" />
+</Solution>
