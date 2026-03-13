@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace BeatTrack.Core;
 
 public sealed class MusicClassifier
@@ -46,27 +48,27 @@ public sealed class MusicClassifier
         "strange parts", "kitboga", "electrified",
     ];
 
-    private static readonly string[] DenyTitleTerms =
-    [
-        "cbc news", "abc news", "ezra klein", "meidastouch",
-        "dotnet", ".net ", "hanselman", "veritasium",
-        "doctor who", "sherlock", "anthropic", "pentagon",
-        "trump", "iran", "devops",
-    ];
+    private static readonly SearchValues<string> DenyTitleTerms =
+        SearchValues.Create([
+            "cbc news", "abc news", "ezra klein", "meidastouch",
+            "dotnet", ".net ", "hanselman", "veritasium",
+            "doctor who", "sherlock", "anthropic", "pentagon",
+            "trump", "iran", "devops",
+        ], StringComparison.OrdinalIgnoreCase);
 
-    private static readonly string[] StrongPositiveTitleTerms =
-    [
-        " - topic", "vevo", "official video", "official audio",
-        "visualizer", "visualiser", "remix", "album stream",
-        "full album", "kexp", "cercle", "boiler room", "tiny desk",
-        "concert", "acoustic session",
-    ];
+    private static readonly SearchValues<string> StrongPositiveTitleTerms =
+        SearchValues.Create([
+            " - topic", "vevo", "official video", "official audio",
+            "visualizer", "visualiser", "remix", "album stream",
+            "full album", "kexp", "cercle", "boiler room", "tiny desk",
+            "concert", "acoustic session",
+        ], StringComparison.OrdinalIgnoreCase);
 
-    private static readonly string[] MediumPositiveTitleTerms =
-    [
-        "live at", "lyrics", "lyric video", "session",
-        "feat.", " ft. ", "featuring ",
-    ];
+    private static readonly SearchValues<string> MediumPositiveTitleTerms =
+        SearchValues.Create([
+            "live at", "lyrics", "lyric video", "session",
+            "feat.", " ft. ", "featuring ",
+        ], StringComparison.OrdinalIgnoreCase);
 
     public MusicClassifier(IEnumerable<string> knownArtists)
     {
@@ -156,16 +158,23 @@ public sealed class MusicClassifier
         return null;
     }
 
+    private static readonly (string Suffix, StringComparison Comparison)[] ChannelSuffixes =
+    [
+        (" - Topic", StringComparison.OrdinalIgnoreCase),
+        ("VEVO", StringComparison.OrdinalIgnoreCase),
+        ("officialchannel", StringComparison.OrdinalIgnoreCase),
+        ("Music", StringComparison.Ordinal),  // case-sensitive to avoid stripping "music" from band names
+    ];
+
     private static string StripChannelSuffix(string channel)
     {
-        if (channel.EndsWith(" - Topic", StringComparison.OrdinalIgnoreCase))
+        foreach (var (suffix, comparison) in ChannelSuffixes)
         {
-            return channel[..^8].Trim();
-        }
-
-        if (channel.EndsWith("VEVO", StringComparison.OrdinalIgnoreCase))
-        {
-            return channel[..^4].Trim();
+            if (channel.Length > suffix.Length
+                && channel.EndsWith(suffix, comparison))
+            {
+                return channel[..^suffix.Length].TrimEnd();
+            }
         }
 
         return channel;
@@ -236,19 +245,11 @@ public sealed class MusicClassifier
         return false;
     }
 
-    private static bool IsDenyListedChannel(string channel)
-    {
-        var lowerChannel = channel.ToLowerInvariant();
-        foreach (var deny in DenyChannels)
-        {
-            if (lowerChannel.Contains(deny, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
+    private static readonly SearchValues<string> DenyChannelTerms =
+        SearchValues.Create(DenyChannels, StringComparison.OrdinalIgnoreCase);
 
-        return false;
-    }
+    private static bool IsDenyListedChannel(string channel) =>
+        channel.AsSpan().ContainsAny(DenyChannelTerms);
 
     private static MusicClassification ClassifyByHeuristic(string title, string channel)
     {
@@ -279,6 +280,10 @@ public sealed class MusicClassifier
     private static bool LooksLikeArtistTrackPattern(string value) =>
         value.Contains(" - ", StringComparison.Ordinal) || value.Contains(" – ", StringComparison.Ordinal);
 
+    private static readonly SearchValues<string> NonArtistTerms =
+        SearchValues.Create(["news", "show", "podcast", "toolbox", "films", "in-depth",
+            "background", "clips", "official channel"], StringComparison.OrdinalIgnoreCase);
+
     private static bool LooksArtistish(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -286,11 +291,11 @@ public sealed class MusicClassifier
             return false;
         }
 
-        return !ContainsAny(value, ["news", "show", "podcast", "toolbox", "films", "in-depth", "background", "clips", "official channel"]);
+        return !value.AsSpan().ContainsAny(NonArtistTerms);
     }
 
-    private static bool ContainsAny(string value, string[] needles) =>
-        needles.Any(needle => value.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    private static bool ContainsAny(ReadOnlySpan<char> value, SearchValues<string> terms) =>
+        value.ContainsAny(terms);
 }
 
 public sealed record MusicClassification(bool IsMusicCandidate, string? MatchReason);

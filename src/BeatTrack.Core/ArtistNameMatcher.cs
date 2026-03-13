@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 
@@ -12,7 +13,10 @@ namespace BeatTrack.Core;
 ///   2. Extended suffix stripping (officialchannel, official, music, etc.)
 ///   3. Spaceless match — strip all spaces and compare
 ///   4. ASCII-folded spaceless match — strip diacritics then compare spaceless
-///   5. Levenshtein similarity — fuzzy fallback for missing words
+///   5. Reduced form match — strip filler words (and, the, of) then compare
+///   6. Filler word insertion — find embedded "and"/"the"/"of" in spaceless input,
+///      insert spaces, and check against exact index
+///   7. Levenshtein similarity — fuzzy fallback for remaining mismatches
 /// </summary>
 public sealed class ArtistNameMatcher
 {
@@ -25,11 +29,13 @@ public sealed class ArtistNameMatcher
     [
         "vevo",
         " - topic",
-        " topic",       // canonical form after dash/punctuation stripped
+        " topic",
         "officialchannel",
         "official",
         "music",
     ];
+
+    private static readonly string[] FillerWords = ["and", "the", "of"];
 
     // Minimum Levenshtein similarity threshold for a match.
     // Set high to avoid false positives — the spaceless match handles
@@ -55,20 +61,7 @@ public sealed class ArtistNameMatcher
                 continue;
             }
 
-            var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artist);
-            _exactIndex.TryAdd(canonical, canonical);
-
-            var spaceless = canonical.Replace(" ", "", StringComparison.Ordinal);
-            _spacelessIndex.TryAdd(spaceless, canonical);
-
-            var folded = FoldToAscii(spaceless);
-            _asciiFoldedIndex.TryAdd(folded, canonical);
-
-            var reduced = StripFillerWords(canonical);
-            if (reduced != spaceless)
-            {
-                _reducedIndex.TryAdd(reduced, canonical);
-            }
+            AddToIndices(artist);
         }
     }
 
@@ -77,11 +70,14 @@ public sealed class ArtistNameMatcher
     /// </summary>
     public void AddArtist(string name)
     {
-        if (string.IsNullOrWhiteSpace(name))
+        if (!string.IsNullOrWhiteSpace(name))
         {
-            return;
+            AddToIndices(name);
         }
+    }
 
+    private void AddToIndices(string name)
+    {
         var canonical = BeatTrackAnalysis.CanonicalizeArtistName(name);
         _exactIndex.TryAdd(canonical, canonical);
 
@@ -133,23 +129,19 @@ public sealed class ArtistNameMatcher
     /// </summary>
     public static Dictionary<string, double> MergeWeights(Dictionary<string, double> weights)
     {
-        // Process entries by weight descending — heavier entries establish the canonical name
         var sorted = weights.OrderByDescending(static kvp => kvp.Value).ToList();
         var merged = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        var matcher = new ArtistNameMatcher(Enumerable.Empty<string>());
+        var matcher = new ArtistNameMatcher([]);
 
         foreach (var (canonical, weight) in sorted)
         {
-            // Try to resolve against already-added entries
             var resolved = matcher.TryResolve(canonical);
             if (resolved is not null && merged.ContainsKey(resolved))
             {
-                // Merge into existing entry
                 merged[resolved] += weight;
             }
             else
             {
-                // New unique entry — add to both merged dict and matcher
                 merged[canonical] = weight;
                 matcher.AddArtist(canonical);
             }
@@ -177,69 +169,128 @@ public sealed class ArtistNameMatcher
             return exact;
         }
 
-        // Strategy 2: Strip known suffixes and retry exact + spaceless + folded
+        // Strategy 2: Strip known suffixes and retry exact + spaceless + folded + reduced
         var stripped = StripSuffixes(canonical);
         if (stripped != canonical)
         {
-            if (_exactIndex.TryGetValue(stripped, out var strippedExact))
+            var result = TryMatchVariants(stripped);
+            if (result is not null)
             {
-                return strippedExact;
-            }
-
-            var strippedSpaceless = stripped.Replace(" ", "", StringComparison.Ordinal);
-            if (_spacelessIndex.TryGetValue(strippedSpaceless, out var strippedSpacelessMatch))
-            {
-                return strippedSpacelessMatch;
-            }
-
-            var strippedFolded = FoldToAscii(strippedSpaceless);
-            if (_asciiFoldedIndex.TryGetValue(strippedFolded, out var strippedFoldedMatch))
-            {
-                return strippedFoldedMatch;
-            }
-
-            // Also check reduced index (filler words stripped) with the suffix-stripped form
-            if (_reducedIndex.TryGetValue(strippedSpaceless, out var strippedReducedMatch))
-            {
-                return strippedReducedMatch;
+                return result;
             }
         }
 
-        // Strategy 3: Spaceless match
+        // Strategy 3-5: Spaceless, ASCII-folded, reduced
+        var result2 = TryMatchVariants(canonical);
+        if (result2 is not null)
+        {
+            return result2;
+        }
+
+        // Strategy 6: Filler word insertion — find embedded "and"/"the"/"of" in
+        // spaceless input, insert spaces around them, check exact index
         var spaceless = canonical.Replace(" ", "", StringComparison.Ordinal);
-        if (_spacelessIndex.TryGetValue(spaceless, out var spacelessMatch))
+        var inserted = TryFillerWordInsertion(spaceless);
+        if (inserted is not null)
         {
-            return spacelessMatch;
+            return inserted;
         }
 
-        // Strategy 4: ASCII-folded spaceless match (strips diacritics)
-        var folded = FoldToAscii(spaceless);
-        if (_asciiFoldedIndex.TryGetValue(folded, out var foldedMatch))
+        // Also try on suffix-stripped form
+        if (stripped != canonical)
         {
-            return foldedMatch;
+            var strippedSpaceless = stripped.Replace(" ", "", StringComparison.Ordinal);
+            var insertedStripped = TryFillerWordInsertion(strippedSpaceless);
+            if (insertedStripped is not null)
+            {
+                return insertedStripped;
+            }
         }
 
-        // Strategy 5: Reduced form match (strip filler words: and, the, of)
-        // Catches: florencemachine → florence+the+machine, halloates → hall+and+oates
-        var reducedInput = StripFillerWords(canonical);
-        if (_reducedIndex.TryGetValue(reducedInput, out var reducedMatch))
-        {
-            return reducedMatch;
-        }
-
-        // Also check if input (spaceless) matches a known reduced form
-        if (_reducedIndex.TryGetValue(spaceless, out var reducedMatch2))
-        {
-            return reducedMatch2;
-        }
-
-        // Strategy 6: Levenshtein similarity against ASCII-folded index
+        // Strategy 7: Levenshtein similarity against ASCII-folded index
         if (spaceless.Length >= MinLengthForLevenshtein)
         {
             var bestMatch = FindBestLevenshteinMatch(spaceless);
             if (bestMatch is not null)
             {
                 return bestMatch;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Tries spaceless, ASCII-folded, and reduced matching for a given canonical name.
+    /// </summary>
+    private string? TryMatchVariants(string canonical)
+    {
+        var spaceless = canonical.Replace(" ", "", StringComparison.Ordinal);
+        if (_spacelessIndex.TryGetValue(spaceless, out var spacelessMatch))
+        {
+            return spacelessMatch;
+        }
+
+        var folded = FoldToAscii(spaceless);
+        if (_asciiFoldedIndex.TryGetValue(folded, out var foldedMatch))
+        {
+            return foldedMatch;
+        }
+
+        // Check reduced index both ways
+        var reducedInput = StripFillerWords(canonical);
+        if (_reducedIndex.TryGetValue(reducedInput, out var reducedMatch))
+        {
+            return reducedMatch;
+        }
+
+        if (_reducedIndex.TryGetValue(spaceless, out var reducedMatch2))
+        {
+            return reducedMatch2;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Tries inserting spaces around filler words embedded in a spaceless string.
+    /// e.g. "hallandoates" → finds "and" at pos 4 → tries "hall and oates" → checks exact index.
+    /// </summary>
+    private string? TryFillerWordInsertion(string spaceless)
+    {
+        foreach (var filler in FillerWords)
+        {
+            var idx = spaceless.IndexOf(filler, StringComparison.Ordinal);
+            while (idx > 0 && idx + filler.Length < spaceless.Length)
+            {
+                var before = spaceless[..idx];
+                var after = spaceless[(idx + filler.Length)..];
+                var candidate = $"{before} {filler} {after}";
+
+                if (_exactIndex.TryGetValue(candidate, out var match))
+                {
+                    return match;
+                }
+
+                // Try with additional filler insertions in the remainder
+                // e.g. "florenceandthemachine" → "florence and themachine" → "florence and the machine"
+                foreach (var filler2 in FillerWords)
+                {
+                    var idx2 = after.IndexOf(filler2, StringComparison.Ordinal);
+                    if (idx2 > 0 && idx2 + filler2.Length < after.Length)
+                    {
+                        var before2 = after[..idx2];
+                        var after2 = after[(idx2 + filler2.Length)..];
+                        var candidate2 = $"{before} {filler} {before2} {filler2} {after2}";
+
+                        if (_exactIndex.TryGetValue(candidate2, out var match2))
+                        {
+                            return match2;
+                        }
+                    }
+                }
+
+                idx = spaceless.IndexOf(filler, idx + 1, StringComparison.Ordinal);
             }
         }
 
@@ -268,8 +319,6 @@ public sealed class ArtistNameMatcher
 
         foreach (var (foldedKey, canonical) in _asciiFoldedIndex)
         {
-            // Quick length pre-filter: if lengths differ by more than 30%,
-            // similarity can't reach the threshold
             var lengthRatio = (double)Math.Min(foldedInput.Length, foldedKey.Length)
                 / Math.Max(foldedInput.Length, foldedKey.Length);
             if (lengthRatio < LevenshteinThreshold)
@@ -287,8 +336,6 @@ public sealed class ArtistNameMatcher
 
         return bestCanonical;
     }
-
-    private static readonly string[] FillerWords = ["and", "the", "of"];
 
     /// <summary>
     /// Removes filler words (and, the, of) and spaces from a canonical name.

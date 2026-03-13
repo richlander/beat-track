@@ -236,6 +236,20 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
         {
             artistName = watch.ChannelName;
         }
+        else if (watch.MusicMatchReason is "MusicPlatform" or "StrongHeuristic" or "MediumHeuristic")
+        {
+            // Extract artist from "Artist - Track" title pattern on platform channels
+            var titleParts = watch.Title.Split([" - ", " – "], 2, StringSplitOptions.TrimEntries);
+            if (titleParts.Length == 2 && titleParts[0].Length >= 2)
+            {
+                // Validate against known artists via matcher
+                var candidate = matcher.TryResolve(titleParts[0]);
+                if (candidate is not null)
+                {
+                    artistName = titleParts[0];
+                }
+            }
+        }
 
         if (artistName is not null)
         {
@@ -253,7 +267,8 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
             }
             else
             {
-                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
+                var cleaned = ArtistNameMatcher.CleanChannelName(artistName);
+                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
                 ytWeights.TryGetValue(canonical, out var current);
                 ytWeights[canonical] = current + 1;
             }
@@ -307,6 +322,102 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
     {
         Console.WriteLine($"  ... and {comparison.OnlyB.Count - 30} more");
     }
+
+    // === Last 60 days slice comparison ===
+    Console.WriteLine();
+    Console.WriteLine("=== Last 60 days: Last.fm vs YouTube ===");
+    Console.WriteLine();
+
+    var cutoff60d = DateTimeOffset.UtcNow.AddDays(-60);
+    var cutoffMs = cutoff60d.ToUnixTimeMilliseconds();
+    var cutoffSec = cutoff60d.ToUnixTimeSeconds();
+
+    var lastFm60d = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    foreach (var scrobble in scrobbles.Where(s => s.TimestampMs >= cutoffMs))
+    {
+        var cleaned = ArtistNameMatcher.CleanChannelName(scrobble.ArtistName);
+        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
+        var resolved = matcher.TryResolve(canonical) ?? canonical;
+        lastFm60d.TryGetValue(resolved, out var current);
+        lastFm60d[resolved] = current + 1;
+    }
+
+    var yt60d = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    foreach (var watch in youTubeSnapshot.WatchEvents)
+    {
+        if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
+            continue;
+        if (watch.WatchedAtUnixTime is null || watch.WatchedAtUnixTime < cutoffSec)
+            continue;
+
+        string? artistName = null;
+        if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
+            artistName = watch.MusicMatchReason["KnownArtist:".Length..];
+        else if (watch.MusicMatchReason is "AutoMusicChannel" && !string.IsNullOrWhiteSpace(watch.ChannelName))
+            artistName = watch.ChannelName;
+        else if (watch.MusicMatchReason is "MusicPlatform" or "StrongHeuristic" or "MediumHeuristic")
+        {
+            var titleParts = watch.Title.Split([" - ", " – "], 2, StringSplitOptions.TrimEntries);
+            if (titleParts.Length == 2 && titleParts[0].Length >= 2)
+            {
+                var candidate = matcher.TryResolve(titleParts[0]);
+                if (candidate is not null)
+                    artistName = titleParts[0];
+            }
+        }
+
+        if (artistName is not null)
+        {
+            var resolved = matcher.TryResolve(artistName);
+            if (resolved is not null)
+            {
+                yt60d.TryGetValue(resolved, out var current);
+                yt60d[resolved] = current + 1;
+            }
+            else
+            {
+                var cleaned = ArtistNameMatcher.CleanChannelName(artistName);
+                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
+                yt60d.TryGetValue(canonical, out var current);
+                yt60d[canonical] = current + 1;
+            }
+        }
+    }
+
+    var lastFm60dSlice = new BeatTrackSlice("Last.fm (60d)", lastFm60d);
+    var yt60dSlice = new BeatTrackSlice("YouTube (60d)", yt60d);
+
+    Console.WriteLine($"lastfm_60d: {lastFm60dSlice.ArtistWeights.Count} artists, {lastFm60d.Values.Sum():N0} scrobbles");
+    Console.WriteLine($"youtube_60d: {yt60dSlice.ArtistWeights.Count} artists, {yt60d.Values.Sum():N0} watches");
+    Console.WriteLine();
+
+    var cmp60d = BeatTrackSliceComparer.Compare(lastFm60dSlice, yt60dSlice);
+
+    Console.WriteLine($"shared ({cmp60d.Shared.Count} artists):");
+    foreach (var artist in cmp60d.Shared.Take(40))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  (lastfm={artist.WeightA:N0}, youtube={artist.WeightB:N0})");
+    }
+    if (cmp60d.Shared.Count > 40)
+        Console.WriteLine($"  ... and {cmp60d.Shared.Count - 40} more");
+
+    Console.WriteLine();
+    Console.WriteLine($"lastfm_only ({cmp60d.OnlyA.Count} artists):");
+    foreach (var artist in cmp60d.OnlyA.Take(30))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} scrobbles)");
+    }
+    if (cmp60d.OnlyA.Count > 30)
+        Console.WriteLine($"  ... and {cmp60d.OnlyA.Count - 30} more");
+
+    Console.WriteLine();
+    Console.WriteLine($"youtube_only ({cmp60d.OnlyB.Count} artists):");
+    foreach (var artist in cmp60d.OnlyB.Take(30))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} watches)");
+    }
+    if (cmp60d.OnlyB.Count > 30)
+        Console.WriteLine($"  ... and {cmp60d.OnlyB.Count - 30} more");
 }
 
 return 0;

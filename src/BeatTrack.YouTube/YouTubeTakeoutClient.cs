@@ -81,11 +81,39 @@ public sealed class YouTubeTakeoutClient
         return items;
     }
 
+    private static readonly Dictionary<string, string> TimezoneAbbreviations = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["PDT"] = "-07:00", ["PST"] = "-08:00",
+        ["MDT"] = "-06:00", ["MST"] = "-07:00",
+        ["CDT"] = "-05:00", ["CST"] = "-06:00",
+        ["EDT"] = "-04:00", ["EST"] = "-05:00",
+        ["UTC"] = "+00:00", ["GMT"] = "+00:00",
+        ["BST"] = "+01:00", ["CET"] = "+01:00", ["CEST"] = "+02:00",
+        ["IST"] = "+05:30", ["JST"] = "+09:00", ["AEST"] = "+10:00",
+    };
+
     private static long? ParseDate(string value)
     {
+        // Try direct parse first
         if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed))
         {
             return parsed.ToUnixTimeSeconds();
+        }
+
+        // Replace common timezone abbreviations with UTC offsets
+        // e.g. "Mar 10, 2026, 3:06:30 PM PDT" → "Mar 10, 2026, 3:06:30 PM -07:00"
+        var lastSpace = value.LastIndexOf(' ');
+        if (lastSpace > 0)
+        {
+            var tzAbbrev = value[(lastSpace + 1)..].Trim();
+            if (TimezoneAbbreviations.TryGetValue(tzAbbrev, out var offset))
+            {
+                var replaced = string.Concat(value.AsSpan(0, lastSpace + 1), offset);
+                if (DateTimeOffset.TryParse(replaced, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out parsed))
+                {
+                    return parsed.ToUnixTimeSeconds();
+                }
+            }
         }
 
         return null;
