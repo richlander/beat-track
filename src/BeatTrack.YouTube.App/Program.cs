@@ -47,10 +47,42 @@ foreach (var discovered in discoveredArtists)
     knownArtists.Add(discovered.Name);
 }
 
+// MusicBrainz validation: check remaining heuristic channel names
+var skipMusicBrainz = IsTrue(Environment.GetEnvironmentVariable("BEAT_TRACK_SKIP_MUSICBRAINZ"));
+if (!skipMusicBrainz)
+{
+    // Build intermediate classifier to find what's still in StructuralHeuristic
+    var intermediateClassifier = new MusicClassifier(knownArtists);
+    var intermediateEvents = client.ParseWatchHistoryHtml(watchHistoryHtml, intermediateClassifier);
+
+    var heuristicChannels = intermediateEvents
+        .Where(static e => e.IsMusicCandidate && e.MusicMatchReason == "StructuralHeuristic" && !string.IsNullOrWhiteSpace(e.ChannelName))
+        .GroupBy(static e => e.ChannelName!, StringComparer.OrdinalIgnoreCase)
+        .Where(static g => g.Count() >= 3)
+        .Select(static g => g.First().ChannelName!)
+        .Where(name => !knownArtists.Contains(name))
+        .ToList();
+
+    Console.WriteLine($"musicbrainz_candidates: {heuristicChannels.Count}");
+
+    using var mbLookup = new MusicBrainzArtistLookup();
+    var confirmed = await mbLookup.LookupCandidatesAsync(
+        heuristicChannels,
+        new Progress<string>(name => Console.Write($"\r  checking: {name,-50}")));
+    Console.WriteLine();
+
+    Console.WriteLine($"musicbrainz_confirmed: {confirmed.Count}");
+    foreach (var match in confirmed)
+    {
+        knownArtists.Add(match.MatchedName ?? match.Query);
+        Console.WriteLine($"  + {match.Query} => {match.MatchedName} (score={match.Score}, mbid={match.MusicBrainzId})");
+    }
+}
+
 Console.WriteLine($"known_artists_final: {knownArtists.Count}");
 Console.WriteLine();
 
-// Pass 2: reclassify with expanded artist set
+// Final pass: reclassify with expanded artist set
 var finalClassifier = new MusicClassifier(knownArtists);
 var watchEvents = client.ParseWatchHistoryHtml(watchHistoryHtml, finalClassifier);
 
@@ -124,6 +156,10 @@ foreach (var ch in suspectChannels)
 }
 
 return 0;
+
+static bool IsTrue(string? value) =>
+    string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+    || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 
 static HashSet<string> LoadKnownArtists(string snapshotPath)
 {

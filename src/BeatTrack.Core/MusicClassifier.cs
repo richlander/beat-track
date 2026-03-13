@@ -42,6 +42,8 @@ public sealed class MusicClassifier
         "raging moderates", "the majority report",
         "movieclips", "rotten tomatoes", "prime video", "miramax",
         "techworld with nana", "distrotube",
+        "sabine hossenfelder", "astrum", "adam ondra", "dr. becky",
+        "strange parts", "kitboga", "electrified",
     ];
 
     private static readonly string[] DenyTitleTerms =
