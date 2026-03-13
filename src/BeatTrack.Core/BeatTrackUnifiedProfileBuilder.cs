@@ -55,9 +55,16 @@ public static class BeatTrackUnifiedProfileBuilder
             foreach (var watch in youTubeSnapshot.WatchEvents)
             {
                 if (watch.IsMusicCandidate && !string.IsNullOrWhiteSpace(watch.ChannelName)
-                    && watch.MusicMatchReason is not null && watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
+                    && watch.MusicMatchReason is not null
+                    && (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal)
+                        || watch.MusicMatchReason is "AutoMusicChannel" or "MusicPlatform"))
                 {
-                    AddArtist(artistRefs, watch.ChannelName, BeatTrackSource.YouTube, sourceUrl: watch.Url);
+                    // Extract the actual artist name from KnownArtist matches, use channel name for auto-channels
+                    var artistName = watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal)
+                        ? watch.MusicMatchReason["KnownArtist:".Length..]
+                        : watch.ChannelName;
+
+                    AddArtist(artistRefs, artistName, BeatTrackSource.YouTube, sourceUrl: watch.Url);
                 }
             }
         }

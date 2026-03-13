@@ -7,4 +7,5 @@
   <Project Path="src/BeatTrack.LastFm/BeatTrack.LastFm.csproj" />
   <Project Path="src/BeatTrack.Discogs/BeatTrack.Discogs.csproj" />
   <Project Path="src/BeatTrack.Discogs.App/BeatTrack.Discogs.App.csproj" />
+  <Project Path="src/BeatTrack.App/BeatTrack.App.csproj" />
 </Solution>
