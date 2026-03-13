@@ -14,6 +14,7 @@ public sealed record BeatTrackWatchEvent(
     long? WatchedAtUnixTime,
     string Product,
     bool IsMusicCandidate,
+    string? MusicMatchReason,
     string EventKind);
 
 public sealed record BeatTrackYouTubeSnapshot(

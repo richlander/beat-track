@@ -48,9 +48,11 @@ public sealed class YouTubeTakeoutClient
         return items;
     }
 
-    public IReadOnlyList<BeatTrackWatchEvent> ParseWatchHistoryHtml(string html)
+    public IReadOnlyList<BeatTrackWatchEvent> ParseWatchHistoryHtml(string html, MusicClassifier? classifier = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(html);
+
+        classifier ??= new MusicClassifier([]);
 
         var matches = WatchEventRegex.Matches(html);
         var items = new List<BeatTrackWatchEvent>(matches.Count);
@@ -63,68 +65,21 @@ public sealed class YouTubeTakeoutClient
             var dateText = Decode(match.Groups["date"].Value);
             var kind = match.Groups[1].Value;
 
+            var classification = classifier.Classify(title, channel);
+
             items.Add(new BeatTrackWatchEvent(
                 Title: title,
                 ChannelName: channel,
                 Url: url,
                 WatchedAtUnixTime: ParseDate(dateText),
                 Product: "YouTube",
-                IsMusicCandidate: IsLikelyMusic(title, channel),
+                IsMusicCandidate: classification.IsMusicCandidate,
+                MusicMatchReason: classification.MatchReason,
                 EventKind: kind));
         }
 
         return items;
     }
-
-    private static bool IsLikelyMusic(string title, string? channel)
-    {
-        var titleText = title.AsSpan();
-        var channelText = channel ?? string.Empty;
-        var haystack = $"{title} {channelText}";
-
-        if (ContainsAny(haystack, ["cbc news", "abc news", "ezra klein", "meidastouch", "dotnet", "hanselman", "veritasium", "doctor who", "sherlock", "anthropic", "pentagon", "trump", "iran", "devops"]))
-        {
-            return false;
-        }
-
-        var strongPositive = ContainsAny(haystack, [" - topic", "vevo", "official video", "official audio", "visualizer", "visualiser", "remix", "album stream", "full album", "kexp", "cercle", "boiler room", "tiny desk", "concert", "acoustic session"]);
-        var mediumPositive = ContainsAny(haystack, ["live at", "lyrics", "lyric video", "session", "feat.", " ft. ", "featuring "]);
-        var structuralPositive = LooksLikeArtistTrackPattern(title) && !ContainsAny(haystack, ["the ezra klein show", "abc news", "cbc news", "saturday night live", "monocle", "devops toolbox"]);
-
-        if (strongPositive)
-        {
-            return true;
-        }
-
-        if (mediumPositive && structuralPositive)
-        {
-            return true;
-        }
-
-        if (channelText.Contains("topic", StringComparison.OrdinalIgnoreCase)
-            || channelText.Contains("vevo", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return structuralPositive && LooksArtistish(channelText);
-    }
-
-    private static bool LooksLikeArtistTrackPattern(string value) =>
-        value.Contains(" - ", StringComparison.Ordinal) || value.Contains(" – ", StringComparison.Ordinal);
-
-    private static bool LooksArtistish(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return !ContainsAny(value, ["news", "show", "podcast", "toolbox", "films", "in-depth", "background", "clips", "official channel"]);
-    }
-
-    private static bool ContainsAny(string value, string[] needles) =>
-        needles.Any(needle => value.Contains(needle, StringComparison.OrdinalIgnoreCase));
 
     private static long? ParseDate(string value)
     {
