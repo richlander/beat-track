@@ -12,19 +12,47 @@ if (!File.Exists(musicLibraryPath) || !File.Exists(watchHistoryPath))
     return 1;
 }
 
-// Load known artists from Last.fm snapshot if available
+// Load known artists from Last.fm snapshot
 var snapshotPath = Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH")
     ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "data", "runfaster2000-snapshot.json");
 
 var knownArtists = LoadKnownArtists(snapshotPath);
-Console.WriteLine($"known_artists_loaded: {knownArtists.Count} (from {(File.Exists(snapshotPath) ? snapshotPath : "none")})");
+Console.WriteLine($"lastfm_artists: {knownArtists.Count}");
 
-var classifier = new MusicClassifier(knownArtists);
-
+// Parse YouTube saved tracks and add their artists
 var client = new YouTubeTakeoutClient();
 using var musicReader = File.OpenText(musicLibraryPath);
 var savedTracks = client.ParseMusicLibrarySongs(musicReader);
-var watchEvents = client.ParseWatchHistoryHtml(await File.ReadAllTextAsync(watchHistoryPath), classifier);
+
+var savedTrackArtists = savedTracks.SelectMany(static t => t.ArtistNames).ToList();
+foreach (var artist in savedTrackArtists)
+{
+    knownArtists.Add(artist);
+}
+
+Console.WriteLine($"youtube_saved_track_artists: {savedTrackArtists.Count} ({savedTrackArtists.Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique)");
+Console.WriteLine($"known_artists_after_merge: {knownArtists.Count}");
+
+// Pass 1: classify with Last.fm + saved track artists
+var pass1Classifier = new MusicClassifier(knownArtists);
+var watchHistoryHtml = await File.ReadAllTextAsync(watchHistoryPath);
+var pass1Events = client.ParseWatchHistoryHtml(watchHistoryHtml, pass1Classifier);
+
+// Discover new artists from heuristic matches
+var discoveredArtists = MusicArtistDiscovery.DiscoverArtists(pass1Events);
+Console.WriteLine($"discovered_artists: {discoveredArtists.Count}");
+
+foreach (var discovered in discoveredArtists)
+{
+    knownArtists.Add(discovered.Name);
+}
+
+Console.WriteLine($"known_artists_final: {knownArtists.Count}");
+Console.WriteLine();
+
+// Pass 2: reclassify with expanded artist set
+var finalClassifier = new MusicClassifier(knownArtists);
+var watchEvents = client.ParseWatchHistoryHtml(watchHistoryHtml, finalClassifier);
 
 var musicCandidates = watchEvents.Where(static x => x.IsMusicCandidate).ToList();
 
@@ -42,17 +70,25 @@ foreach (var group in musicCandidates.GroupBy(static x => x.MusicMatchReason ?? 
 }
 
 Console.WriteLine();
-Console.WriteLine("saved_track_sample:");
-foreach (var item in savedTracks.Take(10))
+Console.WriteLine("discovered_artists_detail:");
+foreach (var artist in discoveredArtists)
 {
-    Console.WriteLine($"- {string.Join(", ", item.ArtistNames)} - {item.Title} [{item.AlbumTitle ?? ""}]");
+    // Show whether it moved from heuristic to KnownArtist in pass 2
+    var pass2Reason = watchEvents
+        .FirstOrDefault(e => string.Equals(e.ChannelName, artist.Name, StringComparison.OrdinalIgnoreCase) && e.IsMusicCandidate)
+        ?.MusicMatchReason;
+    Console.WriteLine($"  {artist.EventCount,4}  {artist.Name} [pass2={pass2Reason}]");
 }
 
 Console.WriteLine();
-Console.WriteLine("watch_event_sample:");
-foreach (var item in watchEvents.Take(15))
+Console.WriteLine("remaining_structural_heuristic_channels:");
+foreach (var item in musicCandidates.Where(static x => x.MusicMatchReason == "StructuralHeuristic" && !string.IsNullOrWhiteSpace(x.ChannelName))
+                                    .GroupBy(static x => x.ChannelName!, StringComparer.OrdinalIgnoreCase)
+                                    .Select(static g => new { Name = g.First().ChannelName!, Count = g.Count() })
+                                    .OrderByDescending(static x => x.Count)
+                                    .Take(20))
 {
-    Console.WriteLine($"- {item.EventKind}: {item.ChannelName} - {item.Title} (music={item.IsMusicCandidate}, reason={item.MusicMatchReason ?? "none"})");
+    Console.WriteLine($"  {item.Count,4}  {item.Name}");
 }
 
 Console.WriteLine();
@@ -87,14 +123,6 @@ foreach (var ch in suspectChannels)
     }
 }
 
-Console.WriteLine();
-Console.WriteLine("rejected_sample (non-music with ' - ' in title):");
-foreach (var item in watchEvents.Where(static x => !x.IsMusicCandidate && x.Title.Contains(" - ", StringComparison.Ordinal))
-                                .Take(10))
-{
-    Console.WriteLine($"  - {item.ChannelName} - {item.Title} [reason={item.MusicMatchReason}]");
-}
-
 return 0;
 
 static HashSet<string> LoadKnownArtists(string snapshotPath)
@@ -112,7 +140,6 @@ static HashSet<string> LoadKnownArtists(string snapshotPath)
         using var doc = JsonDocument.Parse(stream);
         var root = doc.RootElement;
 
-        // Extract from recent_tracks
         if (root.TryGetProperty("recent_tracks", out var recentTracks))
         {
             foreach (var track in recentTracks.EnumerateArray())
@@ -128,7 +155,6 @@ static HashSet<string> LoadKnownArtists(string snapshotPath)
             }
         }
 
-        // Extract from top_artists_by_period
         if (root.TryGetProperty("top_artists_by_period", out var topArtists))
         {
             foreach (var period in topArtists.EnumerateObject())
@@ -147,7 +173,6 @@ static HashSet<string> LoadKnownArtists(string snapshotPath)
             }
         }
 
-        // Extract from loved_tracks
         if (root.TryGetProperty("loved_tracks", out var lovedTracks))
         {
             foreach (var track in lovedTracks.EnumerateArray())

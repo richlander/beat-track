@@ -292,3 +292,37 @@ public sealed class MusicClassifier
 }
 
 public sealed record MusicClassification(bool IsMusicCandidate, string? MatchReason);
+
+public sealed record DiscoveredArtist(string Name, int EventCount, string Source);
+
+public static class MusicArtistDiscovery
+{
+    /// <summary>
+    /// Discovers likely music artist names from watch events that were classified
+    /// via heuristics. A channel qualifies only if it has enough strong/medium
+    /// heuristic matches (title contains "official video", "live at", "remix", etc.)
+    /// — pure structural matches (just " - " in title) are not sufficient on their own.
+    /// </summary>
+    public static IReadOnlyList<DiscoveredArtist> DiscoverArtists(
+        IEnumerable<BeatTrackWatchEvent> classifiedEvents,
+        int minimumStrongCount = 3,
+        int minimumTotalCount = 5)
+    {
+        return classifiedEvents
+            .Where(static e => e.IsMusicCandidate
+                && !string.IsNullOrWhiteSpace(e.ChannelName)
+                && e.MusicMatchReason is "StructuralHeuristic" or "StrongHeuristic" or "MediumHeuristic")
+            .GroupBy(static e => e.ChannelName!, StringComparer.OrdinalIgnoreCase)
+            .Where(g =>
+            {
+                var strongOrMedium = g.Count(static e => e.MusicMatchReason is "StrongHeuristic" or "MediumHeuristic");
+                return strongOrMedium >= minimumStrongCount && g.Count() >= minimumTotalCount;
+            })
+            .Select(static g => new DiscoveredArtist(
+                Name: g.First().ChannelName!,
+                EventCount: g.Count(),
+                Source: "YouTubeHeuristic"))
+            .OrderByDescending(static x => x.EventCount)
+            .ToList();
+    }
+}
