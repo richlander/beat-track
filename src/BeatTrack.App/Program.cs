@@ -4,12 +4,41 @@ using BeatTrack.Core;
 using BeatTrack.Discogs;
 using BeatTrack.YouTube;
 
+// --- Resolve data directories ---
+// Search for data in: env var, project/data, workspace/data, ~/.beattrack/data
+static string? FindFile(string? envOverride, params string[] searchPaths)
+{
+    if (envOverride is not null && File.Exists(envOverride)) return envOverride;
+    foreach (var path in searchPaths)
+    {
+        if (File.Exists(path)) return path;
+    }
+    return null;
+}
+
+static string? FindDir(string? envOverride, params string[] searchPaths)
+{
+    if (envOverride is not null && Directory.Exists(envOverride)) return envOverride;
+    foreach (var path in searchPaths)
+    {
+        if (Directory.Exists(path)) return path;
+    }
+    return null;
+}
+
+var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+var workspaceData = Path.GetFullPath(Path.Combine(projectRoot, "..", "..", "data"));
+var homeData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
+
 // --- Load Last.fm snapshot ---
-var lastFmPath = Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH")
-    ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "data", "runfaster2000-snapshot.json");
+var lastFmPath = FindFile(
+    Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH"),
+    Path.Combine(projectRoot, "data", "runfaster2000-snapshot.json"),
+    Path.Combine(workspaceData, "runfaster2000-snapshot.json"),
+    Path.Combine(homeData, "runfaster2000-snapshot.json"));
 
 BeatTrackSnapshot? lastFmSnapshot = null;
-if (File.Exists(lastFmPath))
+if (lastFmPath is not null)
 {
     await using var stream = File.OpenRead(lastFmPath);
     lastFmSnapshot = await JsonSerializer.DeserializeAsync(stream, AppJsonContext.Default.BeatTrackSnapshot);
@@ -21,11 +50,13 @@ else
 }
 
 // --- Load Discogs collection ---
-var discogsCsvPath = Environment.GetEnvironmentVariable("BEAT_TRACK_DISCOGS_CSV")
-    ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "data", "collection-csv", "runfaster2000-collection-20260310-2317.csv");
+var discogsCsvPath = FindFile(
+    Environment.GetEnvironmentVariable("BEAT_TRACK_DISCOGS_CSV"),
+    Path.Combine(workspaceData, "collection-csv", "runfaster2000-collection-20260310-2317.csv"),
+    Path.Combine(homeData, "collection-csv", "runfaster2000-collection-20260310-2317.csv"));
 
 BeatTrackDiscogsSnapshot? discogsSnapshot = null;
-if (File.Exists(discogsCsvPath))
+if (discogsCsvPath is not null)
 {
     var discogsReader = new DiscogsCollectionCsvReader();
     using var csvReader = File.OpenText(discogsCsvPath);
@@ -39,8 +70,11 @@ else
 }
 
 // --- Load YouTube data (with classifier built from Last.fm + Discogs) ---
-var takeoutDir = Environment.GetEnvironmentVariable("BEAT_TRACK_TAKEOUT_DIR")
-    ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "data", "takeout");
+var takeoutDir = FindDir(
+    Environment.GetEnvironmentVariable("BEAT_TRACK_TAKEOUT_DIR"),
+    Path.Combine(workspaceData, "takeout"),
+    Path.Combine(homeData, "takeout"))
+    ?? Path.Combine(workspaceData, "takeout");
 
 var musicLibraryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "music (library and uploads)", "music library songs.csv");
 var watchHistoryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "history", "watch-history.html");
@@ -233,7 +267,7 @@ Console.WriteLine($"mbid_cache: {mbidCache.Count} total entries saved");
 
 // Collect seed artists with MBIDs for gap analysis
 var seedArtists = mbidCache.GetAll()
-    .Select(static e => (e.Mbid, e.MatchedName ?? e.CanonicalName))
+    .Select(static e => (Mbid: e.Mbid, Name: e.MatchedName ?? e.CanonicalName))
     .DistinctBy(static s => s.Mbid, StringComparer.OrdinalIgnoreCase)
     .ToList();
 
@@ -252,25 +286,83 @@ if (seedArtists.Count > 0)
         mbidCache.GetAll().Select(static e => e.Mbid),
         StringComparer.OrdinalIgnoreCase);
 
+    // Load similar artists cache — one markdown table per seed artist
+    var similarCacheDir = Path.Combine(cacheDir, "similar-artists");
+    Directory.CreateDirectory(similarCacheDir);
+
     using var similarLookup = new ListenBrainzSimilarArtistsLookup();
+    var allSimilar = new Dictionary<string, List<SimilarArtist>>(StringComparer.OrdinalIgnoreCase);
+    var queriedCount = 0;
+    var cachedCount = 0;
 
-    // Take top 20 seed artists to keep API calls reasonable
-    var topSeeds = seedArtists.Take(20).ToList();
-    Console.WriteLine($"querying_seeds: {topSeeds.Count} (top artists)");
-    Console.Write("  ");
+    Console.Write("  loading similar artists: ");
+    foreach (var (mbid, name) in seedArtists)
+    {
+        var cacheFile = Path.Combine(similarCacheDir, $"{mbid}.md");
+        if (File.Exists(cacheFile))
+        {
+            // Load from cache
+            var cached = LoadSimilarArtistsCache(cacheFile);
+            if (cached.Count > 0)
+            {
+                allSimilar[mbid] = cached;
+                cachedCount++;
+                continue;
+            }
+        }
 
-    var aggregated = await similarLookup.GetSimilarArtistsForMultipleAsync(
-        topSeeds,
-        progress: new Progress<string>(name => Console.Write($"{name}, ")),
-        cancellationToken: CancellationToken.None);
+        // Query API and cache
+        try
+        {
+            var similar = await similarLookup.GetSimilarArtistsAsync(mbid);
+            if (similar.Count > 0)
+            {
+                allSimilar[mbid] = [.. similar];
+                SaveSimilarArtistsCache(cacheFile, name, similar);
+            }
+            queriedCount++;
+            Console.Write(".");
+        }
+        catch (HttpRequestException)
+        {
+            Console.Write("x");
+        }
+    }
 
-    Console.WriteLine();
-    Console.WriteLine($"total_similar: {aggregated.Count} artists found");
+    Console.WriteLine($" ({cachedCount} cached, {queriedCount} queried)");
+
+    // Aggregate across all seeds
+    var seedNameByMbid = seedArtists.ToDictionary(s => s.Mbid, s => s.Name, StringComparer.OrdinalIgnoreCase);
+    var aggregatedMap = new Dictionary<string, (string Name, int TotalScore, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var (seedMbid, similarList) in allSimilar)
+    {
+        var seedName = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
+        foreach (var artist in similarList)
+        {
+            if (!aggregatedMap.TryGetValue(artist.ArtistMbid, out var entry))
+            {
+                entry = (artist.Name, 0, []);
+                aggregatedMap[artist.ArtistMbid] = entry;
+            }
+
+            entry.Seeds.Add(seedName);
+            aggregatedMap[artist.ArtistMbid] = (entry.Name, entry.TotalScore + artist.Score, entry.Seeds);
+        }
+    }
+
+    var aggregated = aggregatedMap
+        .Where(kvp => !knownMbids.Contains(kvp.Key))
+        .Select(kvp => new AggregatedSimilarArtist(kvp.Key, kvp.Value.Name, kvp.Value.Seeds.Count, kvp.Value.TotalScore, kvp.Value.Seeds))
+        .OrderByDescending(static a => a.SeedCount)
+        .ThenByDescending(static a => a.TotalScore)
+        .ToList();
+
+    Console.WriteLine($"total_similar: {aggregatedMap.Count} artists found across {allSimilar.Count} seeds");
 
     // Filter to artists NOT in any of our sources (check both name and MBID)
     var gaps = aggregated
-        .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name))
-            && !knownMbids.Contains(a.ArtistMbid))
+        .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name)))
         .ToList();
 
     Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
@@ -292,10 +384,12 @@ if (seedArtists.Count > 0)
 
 // === Slice comparison: Last.fm vs YouTube ===
 
-var lastFmStatsPath = Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV")
-    ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "data", "lastfmstats", "lastfmstats-runfaster2000.csv");
+var lastFmStatsPath = FindFile(
+    Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
+    Path.Combine(workspaceData, "lastfmstats", "lastfmstats-runfaster2000.csv"),
+    Path.Combine(homeData, "lastfmstats", "lastfmstats-runfaster2000.csv"));
 
-if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
+if (lastFmStatsPath is not null && youTubeSnapshot is not null)
 {
     Console.WriteLine();
     Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
@@ -530,3 +624,27 @@ if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
 }
 
 return 0;
+
+// --- Helper methods for similar artist caching ---
+
+static List<SimilarArtist> LoadSimilarArtistsCache(string filePath)
+{
+    var (_, rows) = MarkdownTableStore.Read(filePath);
+    var results = new List<SimilarArtist>(rows.Count);
+    foreach (var row in rows)
+    {
+        if (row.Length >= 3)
+        {
+            int.TryParse(row.Length > 2 ? row[2] : "0", out var score);
+            results.Add(new SimilarArtist(row[0], row[1], score, row.Length > 3 ? row[3] : null, null));
+        }
+    }
+    return results;
+}
+
+static void SaveSimilarArtistsCache(string filePath, string seedName, IReadOnlyList<SimilarArtist> artists)
+{
+    string[] headers = ["mbid", "name", "score", "type"];
+    var rows = artists.Select(a => new[] { a.ArtistMbid, a.Name, a.Score.ToString(), a.Type ?? "" });
+    MarkdownTableStore.Write(filePath, headers, rows);
+}
