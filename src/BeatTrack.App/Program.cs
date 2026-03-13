@@ -181,4 +181,105 @@ foreach (var release in multiSourceReleases.OrderBy(static r => r.ArtistCanonica
     Console.WriteLine($"  {release.ArtistCanonicalName} - {release.Title} [{sources}]");
 }
 
+// === Slice comparison: Last.fm vs YouTube ===
+
+var lastFmStatsPath = Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV")
+    ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "data", "lastfmstats", "lastfmstats-runfaster2000.csv");
+
+if (File.Exists(lastFmStatsPath) && youTubeSnapshot is not null)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
+    Console.WriteLine();
+
+    // Build Last.fm slice from full scrobble history
+    using var scrobbleReader = File.OpenText(lastFmStatsPath);
+    var scrobbles = LastFmStatsCsvReader.ParseCsv(scrobbleReader);
+    Console.WriteLine($"lastfm_full_history: {scrobbles.Count} scrobbles");
+
+    var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    foreach (var scrobble in scrobbles)
+    {
+        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(scrobble.ArtistName);
+        lastFmWeights.TryGetValue(canonical, out var current);
+        lastFmWeights[canonical] = current + 1;
+    }
+
+    var lastFmSlice = new BeatTrackSlice("Last.fm", lastFmWeights);
+
+    // Build YouTube slice from music-candidate watch events
+    var ytWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    foreach (var watch in youTubeSnapshot.WatchEvents)
+    {
+        if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
+        {
+            continue;
+        }
+
+        string? artistName = null;
+        if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
+        {
+            artistName = watch.MusicMatchReason["KnownArtist:".Length..];
+        }
+        else if (watch.MusicMatchReason is "AutoMusicChannel" && !string.IsNullOrWhiteSpace(watch.ChannelName))
+        {
+            artistName = watch.ChannelName;
+            if (artistName.EndsWith(" - Topic", StringComparison.OrdinalIgnoreCase))
+                artistName = artistName[..^8].Trim();
+            else if (artistName.EndsWith("VEVO", StringComparison.OrdinalIgnoreCase))
+                artistName = artistName[..^4].Trim();
+        }
+
+        if (artistName is not null)
+        {
+            var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
+            ytWeights.TryGetValue(canonical, out var current);
+            ytWeights[canonical] = current + 1;
+        }
+    }
+
+    var ytSlice = new BeatTrackSlice("YouTube", ytWeights);
+
+    Console.WriteLine($"lastfm_slice: {lastFmSlice.ArtistWeights.Count} artists");
+    Console.WriteLine($"youtube_slice: {ytSlice.ArtistWeights.Count} artists");
+    Console.WriteLine();
+
+    var comparison = BeatTrackSliceComparer.Compare(lastFmSlice, ytSlice);
+
+    Console.WriteLine($"shared ({comparison.Shared.Count} artists):");
+    foreach (var artist in comparison.Shared.Take(40))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  (lastfm={artist.WeightA:N0}, youtube={artist.WeightB:N0})");
+    }
+
+    if (comparison.Shared.Count > 40)
+    {
+        Console.WriteLine($"  ... and {comparison.Shared.Count - 40} more");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"lastfm_only ({comparison.OnlyA.Count} artists):");
+    foreach (var artist in comparison.OnlyA.Take(30))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} scrobbles)");
+    }
+
+    if (comparison.OnlyA.Count > 30)
+    {
+        Console.WriteLine($"  ... and {comparison.OnlyA.Count - 30} more");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"youtube_only ({comparison.OnlyB.Count} artists):");
+    foreach (var artist in comparison.OnlyB.Take(30))
+    {
+        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} watches)");
+    }
+
+    if (comparison.OnlyB.Count > 30)
+    {
+        Console.WriteLine($"  ... and {comparison.OnlyB.Count - 30} more");
+    }
+}
+
 return 0;
