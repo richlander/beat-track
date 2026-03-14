@@ -28,30 +28,46 @@ Data lives at `~/.beattrack/data/`. At minimum, a Last.fm scrobble history CSV i
 
 Before running any commands, check what data and API keys are present. Run these checks and note the results — they determine which commands will work.
 
+The tool searches multiple directories for each data file (env var, then workspace, then project, then home). The checks below mirror that search order.
+
 ### Data files
 
 ```bash
 # Scrobble CSV (required for all quick queries)
-ls ~/.beattrack/data/lastfmstats/lastfmstats-*.csv 2>/dev/null
+# Search: env var → workspace → home
+ls ${BEAT_TRACK_LASTFM_STATS_CSV:-/dev/null} \
+   ~/.openclaw/workspace/data/lastfmstats/lastfmstats-*.csv \
+   ~/.beattrack/data/lastfmstats/lastfmstats-*.csv 2>/dev/null
 
 # Last.fm API snapshot (needed for full analysis MBIDs)
-ls ~/.beattrack/data/*-snapshot.json 2>/dev/null
+# Search: env var → project data/ → workspace → home
+ls ${BEAT_TRACK_SNAPSHOT_PATH:-/dev/null} \
+   ~/.openclaw/workspace/git/beat-track/data/*-snapshot.json \
+   ~/.openclaw/workspace/data/*-snapshot.json \
+   ~/.beattrack/data/*-snapshot.json 2>/dev/null
 
 # Discogs collection (needed for cross-source analysis)
-ls ~/.beattrack/data/collection-csv/*-collection-*.csv 2>/dev/null
+# Search: env var → workspace → home
+ls ${BEAT_TRACK_DISCOGS_CSV:-/dev/null} \
+   ~/.openclaw/workspace/data/collection-csv/*-collection-*.csv \
+   ~/.beattrack/data/collection-csv/*-collection-*.csv 2>/dev/null
 
 # YouTube Takeout (needed for cross-source analysis)
-ls ~/.beattrack/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html 2>/dev/null
+# Search: env var → workspace → home
+ls ${BEAT_TRACK_TAKEOUT_DIR:-/dev/null}/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
+   ~/.openclaw/workspace/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
+   ~/.beattrack/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html 2>/dev/null
 
 # MBID and similar artist caches (grow over time, not required)
-ls ~/.beattrack/cache/mbid-cache.md 2>/dev/null
-ls ~/.beattrack/cache/similar-artists/*.md 2>/dev/null | head -5
+ls ${BEAT_TRACK_CACHE_DIR:-~/.beattrack/cache}/mbid-cache.md 2>/dev/null
+ls ${BEAT_TRACK_CACHE_DIR:-~/.beattrack/cache}/similar-artists/*.md 2>/dev/null | wc -l
 ```
 
 ### API keys
 
 ```bash
 # Last.fm API key (needed for live scrobble feed and snapshot fetching)
+# NOT needed for quick queries or full analysis if snapshot already exists
 echo "${LASTFM_API_KEY:+set}"
 ```
 
