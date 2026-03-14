@@ -13,17 +13,22 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
     var workspaceData0 = Path.GetFullPath(Path.Combine(projectRoot0, "..", "..", "data"));
     var homeData0 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
 
-    static string? FindFile0(string? envOverride, params string[] paths)
+    static string? FindByPattern0(string? envOverride, string pattern, params string[] dirs)
     {
         if (envOverride is not null && File.Exists(envOverride)) return envOverride;
-        foreach (var p in paths) { if (File.Exists(p)) return p; }
+        foreach (var dir in dirs)
+        {
+            if (!Directory.Exists(dir)) continue;
+            var match = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
+            if (match is not null) return match;
+        }
         return null;
     }
 
-    var statsPath = FindFile0(
+    var statsPath = FindByPattern0(
         Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-        Path.Combine(workspaceData0, "lastfmstats", "lastfmstats-runfaster2000.csv"),
-        Path.Combine(homeData0, "lastfmstats", "lastfmstats-runfaster2000.csv"));
+        "lastfmstats-*.csv",
+        Path.Combine(workspaceData0, "lastfmstats"), Path.Combine(homeData0, "lastfmstats"));
 
     if (statsPath is null)
     {
@@ -48,16 +53,6 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
 
 // --- Resolve data directories ---
 // Search for data in: env var, project/data, workspace/data, ~/.beattrack/data
-static string? FindFile(string? envOverride, params string[] searchPaths)
-{
-    if (envOverride is not null && File.Exists(envOverride)) return envOverride;
-    foreach (var path in searchPaths)
-    {
-        if (File.Exists(path)) return path;
-    }
-    return null;
-}
-
 static string? FindDir(string? envOverride, params string[] searchPaths)
 {
     if (envOverride is not null && Directory.Exists(envOverride)) return envOverride;
@@ -68,16 +63,28 @@ static string? FindDir(string? envOverride, params string[] searchPaths)
     return null;
 }
 
+// Find first file matching a glob pattern in multiple directories
+static string? FindByPattern(string? envOverride, string pattern, params string[] searchDirs)
+{
+    if (envOverride is not null && File.Exists(envOverride)) return envOverride;
+    foreach (var dir in searchDirs)
+    {
+        if (!Directory.Exists(dir)) continue;
+        var match = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
+        if (match is not null) return match;
+    }
+    return null;
+}
+
 var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 var workspaceData = Path.GetFullPath(Path.Combine(projectRoot, "..", "..", "data"));
 var homeData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
 
 // --- Load Last.fm snapshot ---
-var lastFmPath = FindFile(
+var lastFmPath = FindByPattern(
     Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH"),
-    Path.Combine(projectRoot, "data", "runfaster2000-snapshot.json"),
-    Path.Combine(workspaceData, "runfaster2000-snapshot.json"),
-    Path.Combine(homeData, "runfaster2000-snapshot.json"));
+    "*-snapshot.json",
+    Path.Combine(projectRoot, "data"), workspaceData, homeData);
 
 BeatTrackSnapshot? lastFmSnapshot = null;
 if (lastFmPath is not null)
@@ -92,10 +99,10 @@ else
 }
 
 // --- Load Discogs collection ---
-var discogsCsvPath = FindFile(
+var discogsCsvPath = FindByPattern(
     Environment.GetEnvironmentVariable("BEAT_TRACK_DISCOGS_CSV"),
-    Path.Combine(workspaceData, "collection-csv", "runfaster2000-collection-20260310-2317.csv"),
-    Path.Combine(homeData, "collection-csv", "runfaster2000-collection-20260310-2317.csv"));
+    "*-collection-*.csv",
+    Path.Combine(workspaceData, "collection-csv"), Path.Combine(homeData, "collection-csv"));
 
 BeatTrackDiscogsSnapshot? discogsSnapshot = null;
 if (discogsCsvPath is not null)
@@ -427,10 +434,10 @@ if (seedArtists.Count > 0)
 
 // === Slice comparison: Last.fm vs YouTube ===
 
-var lastFmStatsPath = FindFile(
+var lastFmStatsPath = FindByPattern(
     Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-    Path.Combine(workspaceData, "lastfmstats", "lastfmstats-runfaster2000.csv"),
-    Path.Combine(homeData, "lastfmstats", "lastfmstats-runfaster2000.csv"));
+    "lastfmstats-*.csv",
+    Path.Combine(workspaceData, "lastfmstats"), Path.Combine(homeData, "lastfmstats"));
 
 if (lastFmStatsPath is not null && youTubeSnapshot is not null)
 {
