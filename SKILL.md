@@ -166,19 +166,47 @@ Only comment on artists that show real engagement:
 
 In general, never highlight an artist based on minimal listening. Statements like "I see you played X this week" when X has 1-2 plays come across as surveillance, not insight. Wait for the data to show a pattern before surfacing it.
 
-## Depth-Aware Recommendations
+## Validating Recommendations
 
-Artist depth distinguishes true artist love from one-track love. Use `artist-depth` to tailor recommendations:
+**Never recommend an artist without checking the scrobble data first.** Every artist you suggest must be checked against the listening history so you can frame the recommendation correctly. Saying "try Alvvays" to someone with 600+ scrobbles is worse than no recommendation — it signals you aren't paying attention.
+
+Before presenting any recommendation, grep the scrobble CSV for the artist:
+
+```bash
+grep -i "artist name" ~/.openclaw/workspace/data/lastfmstats/lastfmstats-*.csv 2>/dev/null | wc -l
+```
+
+Then frame the recommendation based on what you find:
+
+| What the data shows | How to frame it |
+| --- | --- |
+| **Zero plays** | True discovery — "you haven't heard X, and they fit because..." |
+| **A few plays, long ago** | First click opportunity — "X has been on your radar but never clicked — now might be the time because..." |
+| **Significant plays, then a gap** | Revisit — "you used to be into X — worth coming back to because..." |
+| **Hundreds of plays, concentrated on 1-2 albums** | Catalog dig — don't say "try X." Instead: "you've got 400 plays of X but they're all Antisocialites and the self-titled — have you heard Blue Rev?" Point to the albums or tracks they're missing, especially newer releases or deep cuts. |
+| **Hundreds of plays, broad catalog** | Already a true fan — don't recommend the artist at all. Use them as a taste anchor ("since you love X, try Y"). |
+
+### The catalog dig is the highest-value recommendation
+
+When someone is deeply invested in an artist but concentrated on a subset of the catalog, that's the easiest win. They already love the artist — you're just pointing to the room they haven't walked into yet. Use `artist-depth` to identify these:
+
+```bash
+# Check specific artist depth — look at UniqueTracks, Albums, TopTrackShare
+dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window all
+```
+
+If `TopTrackShare` is high or `Albums` is low relative to the artist's actual discography, there's unexplored material. Prioritize:
+1. **Newer releases** they may not know about
+2. **Earlier/deeper albums** that match the sound of what they already play
+3. **Tracks by the same artist** that are stylistically close to their most-played
+
+### Depth-aware recommendation types
 
 - **Deep mode** (`--mode deep`) surfaces `true_love_artists` — high track diversity across many months. These are the user's core taste and the best seeds for similar-artist recommendations.
 - **Shallow mode** (`--mode shallow`) surfaces one-hit wonders with actionable recommendations:
   - **Covers** are detected automatically (e.g. "Get Lucky (Daft Punk cover)" by Daughter → recommend Daft Punk)
   - **Remixes** point to the original artist or remixer
   - **Track fixations** suggest exploring that artist's broader catalog
-
-When making recommendations, match the type to the depth:
-- For a **true love artist** → recommend *similar artists*
-- For a **one-track love** → recommend *similar tracks*, the *original artist* (if a cover), or *more tracks by that artist*
 
 ## Combining Queries for Playlists
 
