@@ -14,8 +14,20 @@ if (string.IsNullOrWhiteSpace(apiKey))
 if (args.Length > 0 && string.Equals(args[0], "live", StringComparison.OrdinalIgnoreCase))
 {
     var liveArgs = args[1..];
-    var liveUser = liveArgs.Where(a => !a.StartsWith('-')).FirstOrDefault()
-        ?? Environment.GetEnvironmentVariable("LASTFM_USER");
+    // Find username: skip flag values (args that follow -n, --interval, etc.)
+    var flagsWithValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "-n", "--interval" };
+    string? liveUser = null;
+    for (var i = 0; i < liveArgs.Length; i++)
+    {
+        if (liveArgs[i].StartsWith('-'))
+        {
+            if (flagsWithValues.Contains(liveArgs[i])) i++; // skip the value
+            continue;
+        }
+        liveUser = liveArgs[i];
+        break;
+    }
+    liveUser ??= Environment.GetEnvironmentVariable("LASTFM_USER");
 
     if (string.IsNullOrWhiteSpace(liveUser))
     {
