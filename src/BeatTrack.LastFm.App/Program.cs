@@ -10,6 +10,25 @@ if (string.IsNullOrWhiteSpace(apiKey))
     return 1;
 }
 
+// Check for "live" subcommand: beat-track-lastfm live [-f] [-n 10] [username]
+if (args.Length > 0 && string.Equals(args[0], "live", StringComparison.OrdinalIgnoreCase))
+{
+    var liveArgs = args[1..];
+    var liveUser = liveArgs.Where(a => !a.StartsWith('-')).FirstOrDefault()
+        ?? Environment.GetEnvironmentVariable("LASTFM_USER");
+
+    if (string.IsNullOrWhiteSpace(liveUser))
+    {
+        Console.Error.WriteLine("Pass a username or set LASTFM_USER.");
+        return 1;
+    }
+
+    var sharedSecretLive = Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
+    using var httpClientLive = new HttpClient();
+    var clientLive = new LastFmClient(httpClientLive, new LastFmClientOptions(apiKey, sharedSecretLive, "beat-track"));
+    return await LiveCommand.RunAsync(clientLive, liveUser, liveArgs);
+}
+
 var userName = args.Length > 0 ? args[0] : Environment.GetEnvironmentVariable("LASTFM_USER");
 if (string.IsNullOrWhiteSpace(userName))
 {
