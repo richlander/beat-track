@@ -24,9 +24,49 @@ The tool is at `/home/rich/.openclaw/workspace/git/beat-track`. All commands run
 
 Data lives at `~/.beattrack/data/`. At minimum, a Last.fm scrobble history CSV is needed.
 
-## Using Without Data
+## Check What's Available
 
-If no data sources are configured yet, help the user set one up:
+Before running any commands, check what data and API keys are present. Run these checks and note the results — they determine which commands will work.
+
+### Data files
+
+```bash
+# Scrobble CSV (required for all quick queries)
+ls ~/.beattrack/data/lastfmstats/lastfmstats-*.csv 2>/dev/null
+
+# Last.fm API snapshot (needed for full analysis MBIDs)
+ls ~/.beattrack/data/*-snapshot.json 2>/dev/null
+
+# Discogs collection (needed for cross-source analysis)
+ls ~/.beattrack/data/collection-csv/*-collection-*.csv 2>/dev/null
+
+# YouTube Takeout (needed for cross-source analysis)
+ls ~/.beattrack/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html 2>/dev/null
+
+# MBID and similar artist caches (grow over time, not required)
+ls ~/.beattrack/cache/mbid-cache.md 2>/dev/null
+ls ~/.beattrack/cache/similar-artists/*.md 2>/dev/null | head -5
+```
+
+### API keys
+
+```bash
+# Last.fm API key (needed for live scrobble feed and snapshot fetching)
+echo "${LASTFM_API_KEY:+set}"
+```
+
+### What works with what
+
+| Available data | What you can run |
+| --- | --- |
+| Scrobble CSV only | All quick queries: `stats`, `top-artists`, `streaks`, `artist-velocity`, `new-discoveries`, `artist-depth`, `miss` |
+| + Snapshot | Full analysis with gap analysis (MBIDs enable similarity lookups) |
+| + Discogs and/or YouTube | Full cross-source analysis (slice comparison, strange absences, re-engagement) |
+| `LASTFM_API_KEY` set | Live scrobble feed, snapshot fetching |
+
+If nothing is found, help the user set up their first data source (see below).
+
+## Setting Up Data
 
 1. **Quickest path**: Export scrobble history from [lastfmstats.com](https://lastfmstats.com) → CSV → place at `~/.beattrack/data/lastfmstats/lastfmstats-USERNAME.csv`
 2. **With API key**: Set `LASTFM_API_KEY` and run the snapshot tool for richer metadata
