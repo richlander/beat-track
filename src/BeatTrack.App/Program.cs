@@ -1,8 +1,50 @@
 using System.Text.Json;
 using BeatTrack.App;
 using BeatTrack.Core;
+using BeatTrack.Core.Queries;
 using BeatTrack.Discogs;
 using BeatTrack.YouTube;
+
+// --- Quick-path: scrobble-only queries that don't need full profile loading ---
+if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "artist-velocity")
+{
+    // Only load the lastfmstats CSV
+    var projectRoot0 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+    var workspaceData0 = Path.GetFullPath(Path.Combine(projectRoot0, "..", "..", "data"));
+    var homeData0 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
+
+    static string? FindFile0(string? envOverride, params string[] paths)
+    {
+        if (envOverride is not null && File.Exists(envOverride)) return envOverride;
+        foreach (var p in paths) { if (File.Exists(p)) return p; }
+        return null;
+    }
+
+    var statsPath = FindFile0(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
+        Path.Combine(workspaceData0, "lastfmstats", "lastfmstats-runfaster2000.csv"),
+        Path.Combine(homeData0, "lastfmstats", "lastfmstats-runfaster2000.csv"));
+
+    if (statsPath is null)
+    {
+        Console.Error.WriteLine("No lastfmstats CSV found. Set BEAT_TRACK_LASTFM_STATS_CSV or place it in data/lastfmstats/.");
+        return 1;
+    }
+
+    using var csvReader = File.OpenText(statsPath);
+    var allScrobbles = LastFmStatsCsvReader.ParseCsv(csvReader);
+    Console.WriteLine($"loaded: {allScrobbles.Count:N0} scrobbles from {Path.GetFileName(statsPath)}");
+    Console.WriteLine();
+
+    return args[0].ToLowerInvariant() switch
+    {
+        "stats" => StatsQuery.Run(allScrobbles),
+        "streaks" => StreaksQuery.Run(allScrobbles, args[1..]),
+        "top-artists" => TopArtistsQuery.Run(allScrobbles, args[1..]),
+        "artist-velocity" => ArtistVelocityQuery.Run(allScrobbles, args[1..]),
+        _ => 1,
+    };
+}
 
 // --- Resolve data directories ---
 // Search for data in: env var, project/data, workspace/data, ~/.beattrack/data
