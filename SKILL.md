@@ -55,6 +55,12 @@ If no data sources are configured yet, help the user set one up:
 | "How long was my Massive Attack streak?" | `dotnet run --project src/BeatTrack.App -- streaks --artist "Massive Attack"` | All streaks for a specific artist |
 | "Show me how my top artists grew over time" | `dotnet run --project src/BeatTrack.App -- artist-velocity --top 10 --bucket yearly` | Cumulative scrobble curves |
 | "Compare Radiohead vs Caribou over time" | `dotnet run --project src/BeatTrack.App -- artist-velocity --artists "Radiohead,Caribou" --bucket monthly` | Side-by-side growth |
+| "Any new discoveries this week?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 7d` | Engagement gradient: new discoveries, first clicks, rediscoveries, longtime fans |
+| "What have I discovered this month?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 30d` | Same gradient over 30 days |
+| "What artists finally clicked?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 60d --prior-threshold 10` | Raise prior-play ceiling to catch more "first click" artists |
+| "Which artists do I explore deeply?" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode deep` | Catalog explorers: most unique tracks/albums |
+| "Which artists am I a one-hit wonder for?" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode shallow` | One-hit wonders: high plays concentrated on 1-2 tracks |
+| "Show artist depth for this year" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window 365d` | All artists by plays with depth metrics |
 
 ### Cross-source analysis (all data, may call APIs on first run)
 
@@ -66,12 +72,57 @@ If no data sources are configured yet, help the user set one up:
 | "What artists am I surprisingly not listening to?" | Run full, look at `Strange absences` section | Artists similar to many active favorites but completely absent |
 | "What music am I missing?" | Run full, look at `Gap analysis` section | Artists in the similarity graph of your favorites that you've never heard |
 
+### Known misses (artists to skip in recommendations)
+
+| User prompt | Command | What it shows |
+| --- | --- | --- |
+| "I tried Johnny Marr, not for me" | `dotnet run --project src/BeatTrack.App -- miss add "Johnny Marr" --reason "doesn't grab me"` | Adds to known misses, excluded from future recommendations |
+| "Show my known misses" | `dotnet run --project src/BeatTrack.App -- miss` | Lists all artists marked as misses |
+| "Actually, give Johnny Marr another chance" | `dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"` | Removes from known misses |
+
+Known misses are stored at `~/.beattrack/data/known-misses.md` and are automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites in the full analysis.
+
 ### Live scrobble feed (requires LASTFM_API_KEY)
 
 | User prompt | Command |
 | --- | --- |
 | "What's playing right now?" | `LASTFM_API_KEY=KEY dotnet run --project src/BeatTrack.LastFm.App -- live -n 5 USERNAME` |
 | "Follow my scrobbles" | `LASTFM_API_KEY=KEY dotnet run --project src/BeatTrack.LastFm.App -- live -f USERNAME` |
+
+## Proactive Discovery Check
+
+When greeting the user or starting a session, run `new-discoveries --window 7d` to check for recent activity. The query classifies active artists along an engagement gradient:
+
+| Category | What it means | How to respond |
+| --- | --- | --- |
+| **New discovery** | Zero prior plays — completely new artist | "You've picked up X this week" — offer similar artists or playlist suggestions |
+| **First click** | Had a few stray plays before, but now truly engaging | "X seems to have clicked" — this is often the most interesting signal; the artist was on the radar but never landed until now |
+| **Rediscovery** | Real prior engagement, went dormant, now back | "Welcome back to X" — acknowledge the return, suggest what else they might revisit |
+| **Longtime fan** | Continuously engaged, no gap | Don't comment unless asked — this is expected behavior, not news |
+
+Only comment on artists that show real engagement:
+
+1. **10+ plays** — genuine interest. Comment and offer to find similar artists or build a playlist around them.
+2. **3-9 plays** — possible interest. Mention briefly, ask if they're enjoying it.
+3. **1-2 plays** — ignore. A single play is not a signal. Do not mention one-off plays to the user — it feels noisy and presumptuous.
+
+**First click** and **rediscovery** are the most conversation-worthy categories. A new discovery is obvious to the listener; a longtime fan needs no commentary. But "this artist finally clicked" or "you've come back to this one" surfaces something the listener may not have consciously noticed.
+
+In general, never highlight an artist based on minimal listening. Statements like "I see you played X this week" when X has 1-2 plays come across as surveillance, not insight. Wait for the data to show a pattern before surfacing it.
+
+## Depth-Aware Recommendations
+
+Artist depth distinguishes true artist love from one-track love. Use `artist-depth` to tailor recommendations:
+
+- **Deep mode** (`--mode deep`) surfaces `true_love_artists` — high track diversity across many months. These are the user's core taste and the best seeds for similar-artist recommendations.
+- **Shallow mode** (`--mode shallow`) surfaces one-hit wonders with actionable recommendations:
+  - **Covers** are detected automatically (e.g. "Get Lucky (Daft Punk cover)" by Daughter → recommend Daft Punk)
+  - **Remixes** point to the original artist or remixer
+  - **Track fixations** suggest exploring that artist's broader catalog
+
+When making recommendations, match the type to the depth:
+- For a **true love artist** → recommend *similar artists*
+- For a **one-track love** → recommend *similar tracks*, the *original artist* (if a cover), or *more tracks by that artist*
 
 ## Combining Queries for Playlists
 
@@ -82,16 +133,20 @@ To build a personalized playlist recommendation, run multiple queries and synthe
 ```bash
 dotnet run --project src/BeatTrack.App -- top-artists --window 7d
 dotnet run --project src/BeatTrack.App -- top-artists --window 30d
+dotnet run --project src/BeatTrack.App -- artist-depth --mode deep --limit 10
 ```
 
-Identify the user's current rotation and recent favorites.
+Identify the user's current rotation, recent favorites, and true love artists.
 
 ### Step 2: Find what to add
 
-Run the full analysis and extract:
+Run `new-discoveries --window 30d` and the full analysis, then extract:
+- **First clicks** — artists that just landed; lean into the momentum
+- **Rediscoveries** — returning favorites; pair with their catalog depth
 - **Surging artists** — double down on what's hot
 - **Re-engagement suggestions** — dormant favorites that fit the current mood
 - **Strange absences with low seed counts (3-5)** — targeted recommendations, not universal connectors
+- **Shallow one-hit wonders** (`artist-depth --mode shallow`) — check if the user should explore the original artist (covers) or the artist's catalog
 
 ### Step 3: Build the playlist
 

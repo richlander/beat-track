@@ -102,6 +102,15 @@ dotnet run --project src/BeatTrack.App -- streaks --artist "Massive Attack"
 # Cumulative play count curves over time
 dotnet run --project src/BeatTrack.App -- artist-velocity --top 10 --bucket yearly
 dotnet run --project src/BeatTrack.App -- artist-velocity --artists "Radiohead,Björk,Caribou" --bucket monthly
+
+# New discoveries — artists you started listening to within a time window
+dotnet run --project src/BeatTrack.App -- new-discoveries --window 7d
+dotnet run --project src/BeatTrack.App -- new-discoveries --window 30d
+
+# Artist depth — catalog explorers vs one-hit wonders
+dotnet run --project src/BeatTrack.App -- artist-depth --mode deep     # who you explore deeply
+dotnet run --project src/BeatTrack.App -- artist-depth --mode shallow  # one-hit wonders
+dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window 365d --min 10
 ```
 
 ### Cross-source analysis (loads all data sources)
@@ -123,6 +132,23 @@ This produces:
 - **Surging** — artists with disproportionately high recent play rates
 - **Re-engagement** — dormant favorites similar to what you're currently into
 - **Strange absences** — artists surrounded by your favorites but completely absent from your data
+
+### Known misses
+
+Track artists you've tried but don't connect with. These are automatically excluded from gap analysis, strange absences, re-engagement, and dormant favorites recommendations.
+
+```bash
+# Add an artist (with optional reason)
+dotnet run --project src/BeatTrack.App -- miss add "Johnny Marr" --reason "tried multiple times, doesn't grab me"
+
+# List all known misses
+dotnet run --project src/BeatTrack.App -- miss
+
+# Remove (give them another chance)
+dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"
+```
+
+Known misses are stored at `~/.beattrack/data/known-misses.md`.
 
 ### Combining queries for playlists
 

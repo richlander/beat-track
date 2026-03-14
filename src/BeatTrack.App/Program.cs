@@ -6,7 +6,7 @@ using BeatTrack.Discogs;
 using BeatTrack.YouTube;
 
 // --- Quick-path: scrobble-only queries that don't need full profile loading ---
-if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "artist-velocity")
+if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "artist-velocity" or "new-discoveries" or "artist-depth" or "miss")
 {
     // Only load the lastfmstats CSV
     var projectRoot0 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
@@ -36,6 +36,13 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
         return 1;
     }
 
+    // Handle "miss" command before loading scrobbles (it doesn't need them)
+    if (args[0].ToLowerInvariant() is "miss")
+    {
+        var missPath = Path.Combine(homeData0, "known-misses.md");
+        return HandleMissCommand(missPath, args[1..]);
+    }
+
     using var csvReader = File.OpenText(statsPath);
     var allScrobbles = LastFmStatsCsvReader.ParseCsv(csvReader);
     Console.WriteLine($"loaded: {allScrobbles.Count:N0} scrobbles from {Path.GetFileName(statsPath)}");
@@ -47,6 +54,8 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
         "streaks" => StreaksQuery.Run(allScrobbles, args[1..]),
         "top-artists" => TopArtistsQuery.Run(allScrobbles, args[1..]),
         "artist-velocity" => ArtistVelocityQuery.Run(allScrobbles, args[1..]),
+        "new-discoveries" => NewDiscoveriesQuery.Run(allScrobbles, args[1..]),
+        "artist-depth" => ArtistDepthQuery.Run(allScrobbles, args[1..]),
         _ => 1,
     };
 }
@@ -273,6 +282,14 @@ var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
 var mbidCache = new MbidCache(mbidCachePath);
 Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
 
+// Load known misses — artists to exclude from recommendations
+var knownMissesPath = Path.Combine(homeData, "known-misses.md");
+var knownMisses = new KnownMisses(knownMissesPath);
+if (knownMisses.Count > 0)
+{
+    Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
+}
+
 // Seed cache from Last.fm snapshot MBIDs
 if (lastFmSnapshot is not null)
 {
@@ -410,9 +427,10 @@ if (seedArtists.Count > 0)
 
     Console.WriteLine($"total_similar: {aggregatedMap.Count} artists found across {allSimilar.Count} seeds");
 
-    // Filter to artists NOT in any of our sources (check both name and MBID)
+    // Filter to artists NOT in any of our sources and not known misses
     var gaps = aggregated
         .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name)))
+        .Where(a => !knownMisses.Contains(a.Name))
         .ToList();
 
     Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
@@ -761,12 +779,12 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
             continue;
         }
 
-        // Filter to dormant favorites
+        // Filter to dormant favorites, excluding known misses
         var dormantInCluster = clusterSeeds
             .Where(seedName2 =>
             {
                 var seedCanonical = BeatTrackAnalysis.CanonicalizeArtistName(seedName2);
-                return dormantFavorites.ContainsKey(seedCanonical);
+                return dormantFavorites.ContainsKey(seedCanonical) && !knownMisses.Contains(seedName2);
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(5)
@@ -828,6 +846,7 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
 
     var strangeAbsences = absenceCandidates.Values
         .Where(static x => x.ActiveNeighbors.Count >= 3) // similar to at least 3 currently-active artists
+        .Where(x => !knownMisses.Contains(x.Name))
         .OrderByDescending(static x => x.ActiveNeighbors.Count)
         .ThenByDescending(static x => x.Score)
         .ToList();
@@ -863,7 +882,7 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
             return slice60.ArtistWeights.ContainsKey(simCanonical);
         });
 
-        if (overlapCount >= 3 && suggestedDormant.Add(seedCanonical))
+        if (overlapCount >= 3 && !knownMisses.Contains(seedName2) && suggestedDormant.Add(seedCanonical))
         {
             var overlapping = similarList
                 .Where(sim => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(sim.Name)))
@@ -875,6 +894,92 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
 }
 
 return 0;
+
+// --- Known misses command ---
+
+static int HandleMissCommand(string filePath, string[] args)
+{
+    var misses = new KnownMisses(filePath);
+
+    if (args.Length == 0)
+    {
+        // List all known misses
+        var all = misses.GetAll();
+        if (all.Count == 0)
+        {
+            Console.WriteLine("No known misses. Use 'miss add \"Artist Name\"' to add one.");
+            return 0;
+        }
+
+        Console.WriteLine($"known_misses ({all.Count}):");
+        foreach (var (_, displayName, reason, dateAdded) in all)
+        {
+            var reasonText = reason is not null ? $" — {reason}" : "";
+            Console.WriteLine($"  {displayName} (added {dateAdded}){reasonText}");
+        }
+
+        return 0;
+    }
+
+    var subCommand = args[0].ToLowerInvariant();
+    switch (subCommand)
+    {
+        case "add":
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: miss add \"Artist Name\" [--reason \"doesn't grab me\"]");
+                return 1;
+            }
+
+            var artistName = args[1];
+            string? reason = null;
+            for (var i = 2; i < args.Length - 1; i++)
+            {
+                if (string.Equals(args[i], "--reason", StringComparison.OrdinalIgnoreCase))
+                {
+                    reason = args[i + 1];
+                    break;
+                }
+            }
+
+            misses.Add(artistName, reason);
+            misses.Save();
+            Console.WriteLine($"Added '{artistName}' to known misses.");
+            return 0;
+        }
+
+        case "remove":
+        {
+            if (args.Length < 2)
+            {
+                Console.Error.WriteLine("Usage: miss remove \"Artist Name\"");
+                return 1;
+            }
+
+            if (misses.Remove(args[1]))
+            {
+                misses.Save();
+                Console.WriteLine($"Removed '{args[1]}' from known misses.");
+            }
+            else
+            {
+                Console.WriteLine($"'{args[1]}' not found in known misses.");
+            }
+
+            return 0;
+        }
+
+        default:
+        {
+            // Treat bare argument as "miss add"
+            misses.Add(subCommand, null);
+            misses.Save();
+            Console.WriteLine($"Added '{subCommand}' to known misses.");
+            return 0;
+        }
+    }
+}
 
 // --- Helper methods for similar artist caching ---
 
