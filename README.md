@@ -12,6 +12,12 @@ cd beat-track
 dotnet build
 ```
 
+Check what data you have and what's needed:
+
+```bash
+dotnet run --project src/BeatTrack.App -- status
+```
+
 Start with your Last.fm scrobble history (see [Data sources](#data-sources)), then:
 
 ```bash
@@ -47,25 +53,35 @@ The CSV is semicolon-delimited: `Artist;Album;AlbumId;Track;Date` (epoch millise
 For richer metadata (MusicBrainz IDs, top artists by time period, loved tracks):
 
 1. Get a [Last.fm API key](https://www.last.fm/api/account/create)
-2. Run the snapshot tool:
+2. Add it to your config file:
 
 ```bash
-LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- YOUR_USERNAME
+mkdir -p ~/.config/beat-track
+echo "lastfm_api_key=YOUR_KEY" >> ~/.config/beat-track/config
+echo "lastfm_user=YOUR_USERNAME" >> ~/.config/beat-track/config
 ```
+
+3. Run the snapshot tool:
+
+```bash
+dotnet run --project src/BeatTrack.LastFm.App -- YOUR_USERNAME
+```
+
+The API key is read from `~/.config/beat-track/config`, `LASTFM_API_KEY` env var, or stdin (in that order).
 
 The snapshot JSON is written to stdout or to a path via `BEAT_TRACK_OUTPUT_PATH`. Place it at `~/.local/share/beat-track/YOUR_USERNAME-snapshot.json`.
 
 #### Live scrobble feed
 
 ```bash
-# Show last 10 scrobbles
-LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- live -n 10 YOUR_USERNAME
+# Show last 10 scrobbles (API key from config file)
+dotnet run --project src/BeatTrack.LastFm.App -- live -n 10 YOUR_USERNAME
 
 # Follow mode — polls every 15s, ctrl-c to stop
-LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- live -f YOUR_USERNAME
+dotnet run --project src/BeatTrack.LastFm.App -- live -f YOUR_USERNAME
 
 # Show last 5, then follow
-LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- live -f -n 5 YOUR_USERNAME
+dotnet run --project src/BeatTrack.LastFm.App -- live -f -n 5 YOUR_USERNAME
 ```
 
 ### Discogs collection (adds physical media)
@@ -164,6 +180,9 @@ Run multiple queries to build a listening plan:
 BeatTrack follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/). Data and cache are stored separately so you can safely clear the cache without losing user data.
 
 ```
+~/.config/beat-track/                 # User configuration ($XDG_CONFIG_HOME/beat-track)
+└── config                           # Key=value settings (API keys, username)
+
 ~/.local/share/beat-track/            # Persistent user data ($XDG_DATA_HOME/beat-track)
 ├── lastfmstats/
 │   └── lastfmstats-*.csv            # Scrobble history export

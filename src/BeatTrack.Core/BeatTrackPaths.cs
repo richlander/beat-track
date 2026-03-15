@@ -21,6 +21,17 @@ public static class BeatTrackPaths
     /// </summary>
     public static string CacheDir { get; } = ResolveCacheDir();
 
+    /// <summary>
+    /// User configuration (API keys, preferences).
+    /// Resolution order: BEAT_TRACK_CONFIG_DIR → XDG_CONFIG_HOME/beat-track → ~/.config/beat-track
+    /// </summary>
+    public static string ConfigDir { get; } = ResolveConfigDir();
+
+    /// <summary>
+    /// Path to the main config file.
+    /// </summary>
+    public static string ConfigFile => Path.Combine(ConfigDir, "config");
+
     private static string ResolveDataDir()
     {
         // Explicit env var override
@@ -44,6 +55,18 @@ public static class BeatTrackPaths
         if (Directory.Exists(legacyPath))
             return legacyPath;
         return xdgPath;
+    }
+
+    private static string ResolveConfigDir()
+    {
+        var envOverride = Environment.GetEnvironmentVariable("BEAT_TRACK_CONFIG_DIR");
+        if (envOverride is not null)
+            return envOverride;
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var xdgConfigHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME")
+            ?? Path.Combine(home, ".config");
+        return Path.Combine(xdgConfigHome, AppName);
     }
 
     private static string ResolveCacheDir()

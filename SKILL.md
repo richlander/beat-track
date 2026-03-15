@@ -67,11 +67,16 @@ ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/mbid-cache.md 2>/dev/null
 ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/similar-artists/*.md 2>/dev/null | wc -l
 ```
 
-### API keys
+### Configuration and API keys
 
 ```bash
-# Last.fm API key (needed for live scrobble feed and snapshot fetching)
-# NOT needed for quick queries or full analysis if snapshot already exists
+# Check status (data availability, config, freshness)
+dotnet run --project src/BeatTrack.App -- status
+
+# Config file (API key, username)
+cat ~/.config/beat-track/config 2>/dev/null
+
+# Last.fm API key fallback (config file is preferred over env var)
 echo "${LASTFM_API_KEY:+set}"
 ```
 
@@ -82,14 +87,14 @@ echo "${LASTFM_API_KEY:+set}"
 | Scrobble CSV only | All quick queries: `stats`, `top-artists`, `streaks`, `artist-velocity`, `new-discoveries`, `artist-depth`, `miss` |
 | + Snapshot | Full analysis with gap analysis (MBIDs enable similarity lookups) |
 | + Discogs and/or YouTube | Full cross-source analysis (slice comparison, strange absences, re-engagement) |
-| `LASTFM_API_KEY` set | Live scrobble feed, snapshot fetching |
+| API key in config or env | Live scrobble feed, snapshot fetching |
 
 If nothing is found, help the user set up their first data source (see below).
 
 ## Setting Up Data
 
 1. **Quickest path**: Export scrobble history from [lastfmstats.com](https://lastfmstats.com) → CSV → place at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv`
-2. **With API key**: Set `LASTFM_API_KEY` and run the snapshot tool for richer metadata
+2. **With API key**: Add `lastfm_api_key=KEY` to `~/.config/beat-track/config` and run the snapshot tool for richer metadata
 3. Even a few days of scrobbles is enough to run `stats` and `top-artists`
 
 ## Data Sources
@@ -97,7 +102,7 @@ If nothing is found, help the user set up their first data source (see below).
 | Source | What it provides | How to get it |
 | --- | --- | --- |
 | Last.fm scrobble CSV | Full listening history with timestamps | Export from lastfmstats.com, place in `~/.local/share/beat-track/lastfmstats/` |
-| Last.fm API snapshot | Top artists with MBIDs, loved tracks | Set `LASTFM_API_KEY`, run `dotnet run --project src/BeatTrack.LastFm.App -- USERNAME` |
+| Last.fm API snapshot | Top artists with MBIDs, loved tracks | Add API key to config, run `dotnet run --project src/BeatTrack.LastFm.App -- USERNAME` |
 | Discogs collection | Physical media ownership | Export CSV from Discogs, place in `~/.local/share/beat-track/collection-csv/` |
 | YouTube watch history | Video listening data | Google Takeout → YouTube, extract to `~/.local/share/beat-track/takeout/extracted/Takeout/` |
 | Spotify (planned) | Streaming history | Not yet supported — extended streaming history from Spotify privacy export is on the roadmap |
@@ -142,12 +147,12 @@ If nothing is found, help the user set up their first data source (see below).
 
 Known misses are stored at `~/.local/share/beat-track/known-misses.md` and are automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites in the full analysis.
 
-### Live scrobble feed (requires LASTFM_API_KEY)
+### Live scrobble feed (requires API key in config or env)
 
 | User prompt | Command |
 | --- | --- |
-| "What's playing right now?" | `LASTFM_API_KEY=KEY dotnet run --project src/BeatTrack.LastFm.App -- live -n 5 USERNAME` |
-| "Follow my scrobbles" | `LASTFM_API_KEY=KEY dotnet run --project src/BeatTrack.LastFm.App -- live -f USERNAME` |
+| "What's playing right now?" | `dotnet run --project src/BeatTrack.LastFm.App -- live -n 5 USERNAME` |
+| "Follow my scrobbles" | `dotnet run --project src/BeatTrack.LastFm.App -- live -f USERNAME` |
 
 ## Proactive Discovery Check
 

@@ -6,6 +6,16 @@ using BeatTrack.Discogs;
 using BeatTrack.YouTube;
 
 // --- Quick-path: scrobble-only queries that don't need full profile loading ---
+// --- Status command (no data loading needed) ---
+if (args.Length > 0 && args[0].ToLowerInvariant() is "status")
+{
+    var projectRoot_s = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+    var workspaceData_s = Path.GetFullPath(Path.Combine(projectRoot_s, "..", "..", "data"));
+    var homeData_s = BeatTrackPaths.DataDir;
+    var searchDirs = new[] { workspaceData_s, homeData_s };
+    return StatusQuery.Run(homeData_s, BeatTrackPaths.CacheDir, BeatTrackPaths.ConfigFile, searchDirs);
+}
+
 if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "duration" or "streaks" or "top-artists" or "artist-velocity" or "new-discoveries" or "artist-depth" or "cluster" or "miss")
 {
     // Only load the lastfmstats CSV

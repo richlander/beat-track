@@ -3,11 +3,27 @@ using BeatTrack.Core;
 using BeatTrack.LastFm;
 using BeatTrack.LastFm.App;
 
-var apiKey = Environment.GetEnvironmentVariable("LASTFM_API_KEY");
+var config = new BeatTrackConfig(BeatTrackPaths.ConfigFile);
+
+var apiKey = config.LastFmApiKey
+    ?? Environment.GetEnvironmentVariable("LASTFM_API_KEY");
+
 if (string.IsNullOrWhiteSpace(apiKey))
 {
-    Console.Error.WriteLine("Set LASTFM_API_KEY first.");
-    return 1;
+    if (!Console.IsInputRedirected && Environment.GetEnvironmentVariable("TERM") is not null)
+    {
+        Console.Error.Write("Last.fm API key: ");
+        apiKey = Console.ReadLine()?.Trim();
+    }
+
+    if (string.IsNullOrWhiteSpace(apiKey))
+    {
+        Console.Error.WriteLine("No API key found. Set it in:");
+        Console.Error.WriteLine($"  config:  {BeatTrackPaths.ConfigFile}  (lastfm_api_key=YOUR_KEY)");
+        Console.Error.WriteLine("  env:     LASTFM_API_KEY");
+        Console.Error.WriteLine("  stdin:   echo YOUR_KEY | beat-track-lastfm ...");
+        return 1;
+    }
 }
 
 // Check for "live" subcommand: beat-track-lastfm live [-f] [-n 10] [username]
@@ -27,7 +43,7 @@ if (args.Length > 0 && string.Equals(args[0], "live", StringComparison.OrdinalIg
         liveUser = liveArgs[i];
         break;
     }
-    liveUser ??= Environment.GetEnvironmentVariable("LASTFM_USER");
+    liveUser ??= config.LastFmUser ?? Environment.GetEnvironmentVariable("LASTFM_USER");
 
     if (string.IsNullOrWhiteSpace(liveUser))
     {
@@ -35,13 +51,13 @@ if (args.Length > 0 && string.Equals(args[0], "live", StringComparison.OrdinalIg
         return 1;
     }
 
-    var sharedSecretLive = Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
+    var sharedSecretLive = config.LastFmSharedSecret ?? Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
     using var httpClientLive = new HttpClient();
     var clientLive = new LastFmClient(httpClientLive, new LastFmClientOptions(apiKey, sharedSecretLive, "beat-track"));
     return await LiveCommand.RunAsync(clientLive, liveUser, liveArgs);
 }
 
-var userName = args.Length > 0 ? args[0] : Environment.GetEnvironmentVariable("LASTFM_USER");
+var userName = args.Length > 0 ? args[0] : (config.LastFmUser ?? Environment.GetEnvironmentVariable("LASTFM_USER"));
 if (string.IsNullOrWhiteSpace(userName))
 {
     Console.Error.WriteLine("Pass a username as the first argument or set LASTFM_USER.");
@@ -55,7 +71,7 @@ var lovedPageSize = ParsePositiveInt(Environment.GetEnvironmentVariable("BEAT_TR
 var outputPath = Environment.GetEnvironmentVariable("BEAT_TRACK_OUTPUT_PATH");
 var jsonOnly = IsTrue(Environment.GetEnvironmentVariable("BEAT_TRACK_JSON_ONLY"));
 
-var sharedSecret = Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
+var sharedSecret = config.LastFmSharedSecret ?? Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
 using var httpClient = new HttpClient();
 var client = new LastFmClient(httpClient, new LastFmClientOptions(apiKey, sharedSecret, "beat-track"));
 
