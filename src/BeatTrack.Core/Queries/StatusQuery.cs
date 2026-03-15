@@ -50,6 +50,13 @@ public static class StatusQuery
         var misses = FindExact(Path.Combine(dataDir, "known-misses.md"));
         PrintSource("  known_misses", misses);
 
+        // User-defined data
+        var favorites = FindExact(Path.Combine(dataDir, "my-favorites.md"));
+        PrintSource("  my_favorites", favorites);
+
+        var userSimilar = FindExact(Path.Combine(dataDir, "my-similar-artists.md"));
+        PrintSource("  my_similar_artists", userSimilar);
+
         Console.WriteLine();
 
         // Cache

@@ -166,6 +166,29 @@ dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"
 
 Known misses are stored at `~/.local/share/beat-track/known-misses.md`.
 
+### User-defined favorites and similarities
+
+You can declare your own favorite artists and similarity relationships. These supplement service-derived data and are especially useful if you don't have a long listening history.
+
+**Favorites** (`~/.local/share/beat-track/my-favorites.md`) — used as seed artists for MBID resolution and gap analysis:
+
+```markdown
+| artist | notes |
+| --- | --- |
+| Slowdive | |
+| Boards of Canada | especially older albums |
+```
+
+**Similarity graph** (`~/.local/share/beat-track/my-similar-artists.md`) — merged into the ListenBrainz similarity data, bidirectional:
+
+```markdown
+| artist | similar_to |
+| --- | --- |
+| Slowdive | My Bloody Valentine |
+| Slowdive | Ride |
+| Boards of Canada | Aphex Twin |
+```
+
 ### Combining queries for playlists
 
 Run multiple queries to build a listening plan:
@@ -191,7 +214,9 @@ BeatTrack follows the [XDG Base Directory Specification](https://specifications.
 ├── takeout/
 │   └── extracted/Takeout/...        # YouTube Takeout
 ├── *-snapshot.json                  # Last.fm API snapshot
-└── known-misses.md                  # Artists excluded from recommendations
+├── known-misses.md                  # Artists excluded from recommendations
+├── my-favorites.md                  # User-declared favorite artists (seed for analysis)
+└── my-similar-artists.md            # User-defined artist similarity graph
 
 ~/.cache/beat-track/                  # Regenerable cache ($XDG_CACHE_HOME/beat-track)
 ├── mbid-cache.md                    # Artist → MusicBrainz ID mappings

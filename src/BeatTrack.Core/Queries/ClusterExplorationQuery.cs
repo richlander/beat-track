@@ -26,6 +26,7 @@ public static class ClusterExplorationQuery
         }
 
         var mbidCache = new MbidCache(mbidCachePath);
+        var userSimilar = new UserSimilarArtists(Path.Combine(BeatTrackPaths.DataDir, "my-similar-artists.md"));
 
         // Build canonical name → (display name, total plays) from all scrobbles
         var artistPlays = scrobbles
@@ -101,6 +102,18 @@ public static class ClusterExplorationQuery
                 })
                 .Where(s => s.Score >= minScore)
                 .ToList();
+
+            // Merge user-defined similarities for this artist
+            var userSims = userSimilar.GetSimilar(canonical);
+            var existingNames = new HashSet<string>(similar.Select(static s => BeatTrackAnalysis.CanonicalizeArtistName(s.Name)), StringComparer.OrdinalIgnoreCase);
+            foreach (var simName in userSims)
+            {
+                if (!existingNames.Contains(simName))
+                {
+                    similar.Add(("user", simName, 500));
+                    existingNames.Add(simName);
+                }
+            }
 
             if (similar.Count == 0) continue;
 

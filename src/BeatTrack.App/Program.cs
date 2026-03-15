@@ -301,6 +301,19 @@ if (knownMisses.Count > 0)
     Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
 }
 
+// Load user-defined data
+var userFavorites = new UserFavorites(Path.Combine(homeData, "my-favorites.md"));
+if (userFavorites.Count > 0)
+{
+    Console.WriteLine($"user_favorites: {userFavorites.Count} artists");
+}
+
+var userSimilar = new UserSimilarArtists(Path.Combine(homeData, "my-similar-artists.md"));
+if (userSimilar.Count > 0)
+{
+    Console.WriteLine($"user_similar_artists: {userSimilar.Count} artists with user-defined similarities");
+}
+
 // Seed cache from Last.fm snapshot MBIDs
 if (lastFmSnapshot is not null)
 {
@@ -311,10 +324,12 @@ if (lastFmSnapshot is not null)
     }
 }
 
-// Look up MBIDs for top unified profile artists that aren't cached yet
+// Look up MBIDs for top unified profile artists + user favorites that aren't cached yet
 var uncachedArtists = profile.Artists
-    .Where(a => mbidCache.GetMbid(a.CanonicalName) is null)
     .Select(static a => a.CanonicalName)
+    .Concat(userFavorites.GetCanonicalNames())
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .Where(a => mbidCache.GetMbid(a) is null)
     .Take(50)
     .ToList();
 
@@ -409,6 +424,43 @@ if (seedArtists.Count > 0)
     }
 
     Console.WriteLine($" ({cachedCount} cached, {queriedCount} queried)");
+
+    // Merge user-defined similarities (name-based, no MBIDs required)
+    if (userSimilar.Count > 0)
+    {
+        var userSimilarCount = 0;
+        foreach (var artist in userSimilar.GetAllArtists())
+        {
+            // Try to find MBID for this artist
+            var mbid = mbidCache.GetMbid(artist);
+            if (mbid is null) continue;
+
+            var similar = userSimilar.GetSimilar(artist);
+            foreach (var simName in similar)
+            {
+                var simMbid = mbidCache.GetMbid(simName);
+                if (simMbid is null) continue;
+
+                if (!allSimilar.TryGetValue(mbid, out var list))
+                {
+                    list = [];
+                    allSimilar[mbid] = list;
+                }
+
+                // Add as a user-sourced similar artist (high score to reflect user intent)
+                if (!list.Any(s => s.ArtistMbid.Equals(simMbid, StringComparison.OrdinalIgnoreCase)))
+                {
+                    list.Add(new SimilarArtist(simMbid, simName, 500, "user", mbid));
+                    userSimilarCount++;
+                }
+            }
+        }
+
+        if (userSimilarCount > 0)
+        {
+            Console.WriteLine($"  merged {userSimilarCount} user-defined similarities into graph");
+        }
+    }
 
     // Aggregate across all seeds
     var aggregatedMap = new Dictionary<string, (string Name, int TotalScore, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
