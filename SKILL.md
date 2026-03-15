@@ -22,7 +22,7 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 
 The tool is at `/home/rich/.openclaw/workspace/git/beat-track`. All commands run from that directory.
 
-Data lives at `~/.beattrack/data/`. At minimum, a Last.fm scrobble history CSV is needed.
+Data lives at `~/.local/share/beat-track/` (XDG) or legacy `~/.beattrack/data/`. At minimum, a Last.fm scrobble history CSV is needed.
 
 ## Check What's Available
 
@@ -37,6 +37,7 @@ The tool searches multiple directories for each data file (env var, then workspa
 # Search: env var → workspace → home
 ls ${BEAT_TRACK_LASTFM_STATS_CSV:-/dev/null} \
    ~/.openclaw/workspace/data/lastfmstats/lastfmstats-*.csv \
+   ~/.local/share/beat-track/lastfmstats/lastfmstats-*.csv \
    ~/.beattrack/data/lastfmstats/lastfmstats-*.csv 2>/dev/null
 
 # Last.fm API snapshot (needed for full analysis MBIDs)
@@ -44,23 +45,26 @@ ls ${BEAT_TRACK_LASTFM_STATS_CSV:-/dev/null} \
 ls ${BEAT_TRACK_SNAPSHOT_PATH:-/dev/null} \
    ~/.openclaw/workspace/git/beat-track/data/*-snapshot.json \
    ~/.openclaw/workspace/data/*-snapshot.json \
+   ~/.local/share/beat-track/*-snapshot.json \
    ~/.beattrack/data/*-snapshot.json 2>/dev/null
 
 # Discogs collection (needed for cross-source analysis)
 # Search: env var → workspace → home
 ls ${BEAT_TRACK_DISCOGS_CSV:-/dev/null} \
    ~/.openclaw/workspace/data/collection-csv/*-collection-*.csv \
+   ~/.local/share/beat-track/collection-csv/*-collection-*.csv \
    ~/.beattrack/data/collection-csv/*-collection-*.csv 2>/dev/null
 
 # YouTube Takeout (needed for cross-source analysis)
 # Search: env var → workspace → home
 ls ${BEAT_TRACK_TAKEOUT_DIR:-/dev/null}/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
    ~/.openclaw/workspace/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
+   ~/.local/share/beat-track/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
    ~/.beattrack/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html 2>/dev/null
 
 # MBID and similar artist caches (grow over time, not required)
-ls ${BEAT_TRACK_CACHE_DIR:-~/.beattrack/cache}/mbid-cache.md 2>/dev/null
-ls ${BEAT_TRACK_CACHE_DIR:-~/.beattrack/cache}/similar-artists/*.md 2>/dev/null | wc -l
+ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/mbid-cache.md 2>/dev/null
+ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/similar-artists/*.md 2>/dev/null | wc -l
 ```
 
 ### API keys
@@ -84,7 +88,7 @@ If nothing is found, help the user set up their first data source (see below).
 
 ## Setting Up Data
 
-1. **Quickest path**: Export scrobble history from [lastfmstats.com](https://lastfmstats.com) → CSV → place at `~/.beattrack/data/lastfmstats/lastfmstats-USERNAME.csv`
+1. **Quickest path**: Export scrobble history from [lastfmstats.com](https://lastfmstats.com) → CSV → place at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv`
 2. **With API key**: Set `LASTFM_API_KEY` and run the snapshot tool for richer metadata
 3. Even a few days of scrobbles is enough to run `stats` and `top-artists`
 
@@ -92,10 +96,10 @@ If nothing is found, help the user set up their first data source (see below).
 
 | Source | What it provides | How to get it |
 | --- | --- | --- |
-| Last.fm scrobble CSV | Full listening history with timestamps | Export from lastfmstats.com, place in `~/.beattrack/data/lastfmstats/` |
+| Last.fm scrobble CSV | Full listening history with timestamps | Export from lastfmstats.com, place in `~/.local/share/beat-track/lastfmstats/` |
 | Last.fm API snapshot | Top artists with MBIDs, loved tracks | Set `LASTFM_API_KEY`, run `dotnet run --project src/BeatTrack.LastFm.App -- USERNAME` |
-| Discogs collection | Physical media ownership | Export CSV from Discogs, place in `~/.beattrack/data/collection-csv/` |
-| YouTube watch history | Video listening data | Google Takeout → YouTube, extract to `~/.beattrack/data/takeout/extracted/Takeout/` |
+| Discogs collection | Physical media ownership | Export CSV from Discogs, place in `~/.local/share/beat-track/collection-csv/` |
+| YouTube watch history | Video listening data | Google Takeout → YouTube, extract to `~/.local/share/beat-track/takeout/extracted/Takeout/` |
 | Spotify (planned) | Streaming history | Not yet supported — extended streaming history from Spotify privacy export is on the roadmap |
 
 ## Available Queries
@@ -136,7 +140,7 @@ If nothing is found, help the user set up their first data source (see below).
 | "Show my known misses" | `dotnet run --project src/BeatTrack.App -- miss` | Lists all artists marked as misses |
 | "Actually, give Johnny Marr another chance" | `dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"` | Removes from known misses |
 
-Known misses are stored at `~/.beattrack/data/known-misses.md` and are automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites in the full analysis.
+Known misses are stored at `~/.local/share/beat-track/known-misses.md` and are automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites in the full analysis.
 
 ### Live scrobble feed (requires LASTFM_API_KEY)
 
@@ -248,10 +252,10 @@ When the user wants fresh data:
 1. Re-download scrobble history CSV from lastfmstats.com (replaces old file)
 2. Re-export Discogs collection if collection changed
 3. Re-download YouTube Takeout if needed
-4. Delete `~/.beattrack/cache/` to force re-resolution of MBIDs and similar artists
+4. Delete `~/.cache/beat-track/` to force re-resolution of MBIDs and similar artists
 5. Re-run: `dotnet run --project src/BeatTrack.App`
 
-The MBID cache (`~/.beattrack/cache/mbid-cache.md`) and similar artist caches (`~/.beattrack/cache/similar-artists/`) persist across runs and grow incrementally. Only delete them to force a full refresh.
+The MBID cache (`~/.cache/beat-track/mbid-cache.md`) and similar artist caches (`~/.cache/beat-track/similar-artists/`) persist across runs and grow incrementally. Only delete them to force a full refresh.
 
 ## Adding New Queries
 

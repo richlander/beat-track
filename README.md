@@ -38,7 +38,7 @@ Export your full scrobble history from [lastfmstats.com](https://lastfmstats.com
 1. Go to `lastfmstats.com/user/YOUR_USERNAME`
 2. Wait for it to load all scrobbles
 3. Click **CSV** (top right)
-4. Place the file at `~/.beattrack/data/lastfmstats/lastfmstats-YOUR_USERNAME.csv`
+4. Place the file at `~/.local/share/beat-track/lastfmstats/lastfmstats-YOUR_USERNAME.csv`
 
 The CSV is semicolon-delimited: `Artist;Album;AlbumId;Track;Date` (epoch milliseconds).
 
@@ -53,7 +53,7 @@ For richer metadata (MusicBrainz IDs, top artists by time period, loved tracks):
 LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- YOUR_USERNAME
 ```
 
-The snapshot JSON is written to stdout or to a path via `BEAT_TRACK_OUTPUT_PATH`. Place it at `~/.beattrack/data/YOUR_USERNAME-snapshot.json`.
+The snapshot JSON is written to stdout or to a path via `BEAT_TRACK_OUTPUT_PATH`. Place it at `~/.local/share/beat-track/YOUR_USERNAME-snapshot.json`.
 
 #### Live scrobble feed
 
@@ -72,14 +72,14 @@ LASTFM_API_KEY=your_key dotnet run --project src/BeatTrack.LastFm.App -- live -f
 
 1. Go to your Discogs collection page
 2. Click **Export** → CSV
-3. Place the file at `~/.beattrack/data/collection-csv/YOUR_USERNAME-collection-*.csv`
+3. Place the file at `~/.local/share/beat-track/collection-csv/YOUR_USERNAME-collection-*.csv`
 
 ### YouTube watch history (adds video listening)
 
 1. Go to [takeout.google.com](https://takeout.google.com)
 2. Select only **YouTube and YouTube Music**
 3. Download and extract
-4. Place at `~/.beattrack/data/takeout/extracted/Takeout/`
+4. Place at `~/.local/share/beat-track/takeout/extracted/Takeout/`
 
 BeatTrack classifies YouTube watch history to identify music content using known artist matching, VEVO/Topic channel detection, music platform recognition (KEXP, Sub Pop, 3voor12, Cercle, etc.), and title pattern analysis.
 
@@ -125,7 +125,7 @@ This produces:
 
 - **Unified profile** — merged artist/release data across all sources
 - **Cross-source breakdown** — which artists appear in 1, 2, or all 3 sources
-- **MBID resolution** — maps artist names to MusicBrainz IDs (cached at `~/.beattrack/cache/mbid-cache.md`)
+- **MBID resolution** — maps artist names to MusicBrainz IDs (cached at `~/.cache/beat-track/mbid-cache.md`)
 - **Gap analysis** — artists similar to your favorites that you've never listened to
 - **Slice comparison** — Last.fm vs YouTube artist overlap with time windows
 - **New interests** — artists appearing for the first time in the last 60 days
@@ -148,7 +148,7 @@ dotnet run --project src/BeatTrack.App -- miss
 dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"
 ```
 
-Known misses are stored at `~/.beattrack/data/known-misses.md`.
+Known misses are stored at `~/.local/share/beat-track/known-misses.md`.
 
 ### Combining queries for playlists
 
@@ -161,27 +161,30 @@ Run multiple queries to build a listening plan:
 
 ## Data directory layout
 
-BeatTrack searches for data in order: environment variables, `~/.beattrack/data/`, then project-relative `data/`.
+BeatTrack follows the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/). Data and cache are stored separately so you can safely clear the cache without losing user data.
 
 ```
-~/.beattrack/
-├── data/
-│   ├── lastfmstats/
-│   │   └── lastfmstats-*.csv          # Scrobble history export
-│   ├── collection-csv/
-│   │   └── *-collection-*.csv         # Discogs CSV export
-│   ├── takeout/
-│   │   └── extracted/Takeout/...      # YouTube Takeout
-│   └── *-snapshot.json                # Last.fm API snapshot
-└── cache/
-    ├── mbid-cache.md                  # Artist → MusicBrainz ID mappings
-    └── similar-artists/               # ListenBrainz similarity data
-        └── {mbid}.md
+~/.local/share/beat-track/            # Persistent user data ($XDG_DATA_HOME/beat-track)
+├── lastfmstats/
+│   └── lastfmstats-*.csv            # Scrobble history export
+├── collection-csv/
+│   └── *-collection-*.csv           # Discogs CSV export
+├── takeout/
+│   └── extracted/Takeout/...        # YouTube Takeout
+├── *-snapshot.json                  # Last.fm API snapshot
+└── known-misses.md                  # Artists excluded from recommendations
+
+~/.cache/beat-track/                  # Regenerable cache ($XDG_CACHE_HOME/beat-track)
+├── mbid-cache.md                    # Artist → MusicBrainz ID mappings
+└── similar-artists/                 # ListenBrainz similarity data
+    └── {mbid}.md
 ```
+
+Legacy `~/.beattrack/` paths are still checked as a fallback.
 
 ## Updating data
 
-Re-export your data sources and replace the files. Caches persist across runs — delete `~/.beattrack/cache/` to force a full refresh.
+Re-export your data sources and replace the files. Caches persist across runs — delete `~/.cache/beat-track/` to force a full refresh.
 
 ```bash
 # Re-download scrobble history from lastfmstats.com, then:

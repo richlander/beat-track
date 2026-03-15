@@ -2,7 +2,7 @@ namespace BeatTrack.Core;
 
 /// <summary>
 /// Manages a list of artists the user has tried and doesn't connect with.
-/// Stored as a markdown table at ~/.beattrack/data/known-misses.md.
+/// Stored as a markdown table at ~/.local/share/beat-track/known-misses.md.
 /// These artists are excluded from recommendations (gaps, strange absences, re-engagement).
 /// </summary>
 public class KnownMisses

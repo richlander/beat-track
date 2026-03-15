@@ -14,9 +14,7 @@ public static class ClusterExplorationQuery
         var top = ParseIntFlag(args, "--top") ?? 10;
         var minScore = ParseIntFlag(args, "--min-score") ?? 100;
 
-        // Resolve cache dir (same logic as Program.cs)
-        var cacheDir = Environment.GetEnvironmentVariable("BEAT_TRACK_CACHE_DIR")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "cache");
+        var cacheDir = BeatTrackPaths.CacheDir;
 
         var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
         var similarCacheDir = Path.Combine(cacheDir, "similar-artists");

@@ -11,7 +11,7 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
     // Only load the lastfmstats CSV
     var projectRoot0 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
     var workspaceData0 = Path.GetFullPath(Path.Combine(projectRoot0, "..", "..", "data"));
-    var homeData0 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
+    var homeData0 = BeatTrackPaths.DataDir;
 
     static string? FindByPattern0(string? envOverride, string pattern, params string[] dirs)
     {
@@ -62,7 +62,7 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
 }
 
 // --- Resolve data directories ---
-// Search for data in: env var, project/data, workspace/data, ~/.beattrack/data
+// Search for data in: env var, workspace/data, XDG data dir
 static string? FindDir(string? envOverride, params string[] searchPaths)
 {
     if (envOverride is not null && Directory.Exists(envOverride)) return envOverride;
@@ -88,7 +88,7 @@ static string? FindByPattern(string? envOverride, string pattern, params string[
 
 var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 var workspaceData = Path.GetFullPath(Path.Combine(projectRoot, "..", "..", "data"));
-var homeData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "data");
+var homeData = BeatTrackPaths.DataDir;
 
 // --- Load Last.fm snapshot ---
 var lastFmPath = FindByPattern(
@@ -276,8 +276,7 @@ foreach (var release in multiSourceReleases.OrderBy(static r => r.ArtistCanonica
 
 // === MBID cache + Gap analysis ===
 
-var cacheDir = Environment.GetEnvironmentVariable("BEAT_TRACK_CACHE_DIR")
-    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beattrack", "cache");
+var cacheDir = BeatTrackPaths.CacheDir;
 
 var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
 var mbidCache = new MbidCache(mbidCachePath);
