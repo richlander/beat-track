@@ -6,7 +6,7 @@ using BeatTrack.Discogs;
 using BeatTrack.YouTube;
 
 // --- Quick-path: scrobble-only queries that don't need full profile loading ---
-if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "artist-velocity" or "new-discoveries" or "artist-depth" or "cluster" or "miss")
+if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "duration" or "streaks" or "top-artists" or "artist-velocity" or "new-discoveries" or "artist-depth" or "cluster" or "miss")
 {
     // Only load the lastfmstats CSV
     var projectRoot0 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
@@ -51,6 +51,7 @@ if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "to
     return args[0].ToLowerInvariant() switch
     {
         "stats" => StatsQuery.Run(allScrobbles),
+        "duration" => DurationQuery.Run(allScrobbles),
         "streaks" => StreaksQuery.Run(allScrobbles, args[1..]),
         "top-artists" => TopArtistsQuery.Run(allScrobbles, args[1..]),
         "artist-velocity" => ArtistVelocityQuery.Run(allScrobbles, args[1..]),

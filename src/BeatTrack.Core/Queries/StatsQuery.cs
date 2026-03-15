@@ -91,7 +91,28 @@ public static class StatsQuery
         Console.WriteLine($"  unique_albums: {uniqueAlbums:N0}");
         Console.WriteLine($"  unique_tracks: {uniqueTracks:N0}");
         Console.WriteLine($"  one_hit_wonders: {oneHitWonders:N0} ({100.0 * oneHitWonders / uniqueArtists:F1}%)");
-        Console.WriteLine($"  listening_span: {spanDays:N0} days");
+        var spanYears = lastDate.Year - firstDate.Year;
+        var spanMonths = lastDate.Month - firstDate.Month;
+        var spanRemainderDays = lastDate.Day - firstDate.Day;
+        if (spanRemainderDays < 0)
+        {
+            spanMonths--;
+            spanRemainderDays += DateTime.DaysInMonth(firstDate.Year + spanYears + (firstDate.Month + spanMonths - 1) / 12,
+                (firstDate.Month + spanMonths - 1) % 12 + 1);
+        }
+        if (spanMonths < 0)
+        {
+            spanYears--;
+            spanMonths += 12;
+        }
+
+        var durationParts = new List<string>();
+        if (spanYears > 0) durationParts.Add($"{spanYears}y");
+        if (spanMonths > 0) durationParts.Add($"{spanMonths}m");
+        if (spanRemainderDays > 0 || durationParts.Count == 0) durationParts.Add($"{spanRemainderDays}d");
+        var duration = string.Join(" ", durationParts);
+
+        Console.WriteLine($"  listening_span: {spanDays:N0} days ({duration})");
         Console.WriteLine($"  active_days: {activeDays:N0} ({100.0 * activeDays / spanDays:F1}%)");
         Console.WriteLine($"  avg_per_active_day: {avgPerActiveDay:F1}");
         Console.WriteLine($"  most_popular_month: {byMonth.Key} ({byMonth.Count():N0} scrobbles)");
