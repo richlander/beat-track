@@ -21,9 +21,7 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 
 ## Tool Location
 
-The tool is at `/home/rich/git/beat-track`. All commands run from that directory.
-
-All commands: `dotnet run --project src/BeatTrack.App -- COMMAND [OPTIONS]`
+All commands: `beat-track COMMAND [OPTIONS]`
 
 ---
 
@@ -38,7 +36,7 @@ On first use, find out what the user has available. Ask them:
 Then check what's already configured:
 
 ```bash
-dotnet run --project src/BeatTrack.App -- status
+beat-trackstatus
 ```
 
 ### Setting up the API key
@@ -77,10 +75,10 @@ With an API key configured, fetch the user's complete history:
 
 ```bash
 # Download full scrobble history (~1 min for 60k scrobbles)
-dotnet run --project src/BeatTrack.App -- history
+beat-trackhistory
 
 # Fetch a snapshot (top artists by period, loved tracks, MBIDs)
-dotnet run --project src/BeatTrack.App -- snapshot
+beat-tracksnapshot
 ```
 
 `history` produces a CSV at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` that all queries read from. `snapshot` produces a JSON file that enables gap analysis and similarity lookups.
@@ -128,10 +126,10 @@ These require a scrobble CSV + snapshot. May call ListenBrainz/MusicBrainz APIs 
 ### Full analysis
 
 ```bash
-dotnet run --project src/BeatTrack.App
+beat-track
 ```
 
-Runs everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences.
+Runs everything (no args): profile, gaps, slices, new interests, surging, re-engagement, strange absences.
 
 | User prompt | What to look at |
 | --- | --- |
@@ -187,10 +185,10 @@ The **catalog dig** is the highest-value recommendation. Use `artist-depth --mod
 
 ```bash
 # Re-download full history (overwrites existing CSV)
-dotnet run --project src/BeatTrack.App -- history
+beat-trackhistory
 
 # Refresh snapshot (top artists, loved tracks, MBIDs)
-dotnet run --project src/BeatTrack.App -- snapshot
+beat-tracksnapshot
 ```
 
 ### Refreshing supplementary sources
