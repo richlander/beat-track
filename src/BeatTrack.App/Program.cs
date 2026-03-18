@@ -3,7 +3,123 @@ using BeatTrack.App;
 using BeatTrack.Core;
 using BeatTrack.Core.Queries;
 using BeatTrack.Discogs;
+using BeatTrack.LastFm;
 using BeatTrack.YouTube;
+
+// --- API commands: require Last.fm API key, no local data needed ---
+if (args.Length > 0 && args[0].ToLowerInvariant() is "live" or "snapshot" or "history")
+{
+    var config_api = new BeatTrackConfig(BeatTrackPaths.ConfigFile);
+    var apiKey = config_api.LastFmApiKey ?? Environment.GetEnvironmentVariable("LASTFM_API_KEY");
+    if (string.IsNullOrWhiteSpace(apiKey))
+    {
+        Console.Error.WriteLine("No API key found. Set it in:");
+        Console.Error.WriteLine($"  config:  {BeatTrackPaths.ConfigFile}  (lastfm_api_key=YOUR_KEY)");
+        Console.Error.WriteLine("  env:     LASTFM_API_KEY");
+        return 1;
+    }
+
+    var userName_api = config_api.LastFmUser ?? Environment.GetEnvironmentVariable("LASTFM_USER");
+    var sharedSecret = config_api.LastFmSharedSecret ?? Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
+    using var httpClient_api = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+    var client = new LastFmClient(httpClient_api, new LastFmClientOptions(apiKey, sharedSecret, "beat-track"));
+
+    if (args[0].ToLowerInvariant() is "live")
+    {
+        var liveArgs = args[1..];
+        // Find username in args: skip flags and their values
+        var flagsWithValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "-n", "--interval" };
+        string? liveUser = null;
+        for (var i = 0; i < liveArgs.Length; i++)
+        {
+            if (liveArgs[i].StartsWith('-'))
+            {
+                if (flagsWithValues.Contains(liveArgs[i])) i++;
+                continue;
+            }
+            liveUser = liveArgs[i];
+            break;
+        }
+        liveUser ??= userName_api;
+
+        if (string.IsNullOrWhiteSpace(liveUser))
+        {
+            Console.Error.WriteLine("Pass a username or set lastfm_user in config.");
+            return 1;
+        }
+
+        return await LiveCommand.RunAsync(client, liveUser, liveArgs);
+    }
+
+    // snapshot command
+    if (args[0].ToLowerInvariant() is "snapshot")
+    {
+        if (string.IsNullOrWhiteSpace(userName_api))
+        {
+            Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var.");
+            return 1;
+        }
+
+        Console.Error.WriteLine($"Fetching snapshot for {userName_api}...");
+        var snapshot_api = await SnapshotFetcher.FetchAsync(client, userName_api);
+
+        var outputPath = args.Length > 2 && args[1] is "--output" ? args[2] : null;
+        outputPath ??= Path.Combine(BeatTrackPaths.DataDir, $"{userName_api}-snapshot.json");
+
+        var dir = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(snapshot_api, AppJsonContext.Default.BeatTrackSnapshot));
+
+        Console.WriteLine($"user: {snapshot_api.Profile.UserName}");
+        Console.WriteLine($"play_count: {snapshot_api.Profile.PlayCount?.ToString() ?? ""}");
+        Console.WriteLine($"recent_tracks: {snapshot_api.RecentTracks.Count}");
+        Console.WriteLine($"loved_tracks: {snapshot_api.LovedTracks.Count}");
+        Console.WriteLine($"top_artist_periods: {snapshot_api.TopArtistsByPeriod.Count}");
+        Console.WriteLine($"snapshot_written_to: {outputPath}");
+        return 0;
+    }
+
+    // history command — fetch full scrobble history
+    if (string.IsNullOrWhiteSpace(userName_api))
+    {
+        Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var.");
+        return 1;
+    }
+
+    var historyTracks = await HistoryFetcher.FetchAllAsync(client, userName_api);
+
+    var historyDir = Path.Combine(BeatTrackPaths.DataDir, "lastfmstats");
+    Directory.CreateDirectory(historyDir);
+    var historyPath = Path.Combine(historyDir, $"lastfmstats-{userName_api}.csv");
+
+    using (var writer = new StreamWriter(historyPath))
+    {
+        HistoryFetcher.WriteCsv(writer, historyTracks, userName_api);
+    }
+
+    Console.WriteLine($"scrobbles: {historyTracks.Count:N0}");
+    Console.WriteLine($"written_to: {historyPath}");
+    return 0;
+}
+
+// --- Skill command: print the SKILL.md for agent consumption ---
+if (args.Length > 0 && args[0].ToLowerInvariant() is "skill")
+{
+    using var stream = typeof(Program).Assembly.GetManifestResourceStream("SKILL.md");
+    if (stream is null)
+    {
+        Console.Error.WriteLine("SKILL.md not found in assembly resources.");
+        return 1;
+    }
+
+    using var reader = new StreamReader(stream);
+    Console.Write(reader.ReadToEnd());
+    return 0;
+}
 
 // --- Quick-path: scrobble-only queries that don't need full profile loading ---
 // --- Status command (no data loading needed) ---

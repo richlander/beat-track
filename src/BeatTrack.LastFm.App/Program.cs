@@ -75,18 +75,8 @@ var sharedSecret = config.LastFmSharedSecret ?? Environment.GetEnvironmentVariab
 using var httpClient = new HttpClient();
 var client = new LastFmClient(httpClient, new LastFmClientOptions(apiKey, sharedSecret, "beat-track"));
 
-var profile = (await client.GetUserInfoAsync(userName)).ToBeatTrackUserProfile();
-var recentTracks = await FetchRecentTracksAsync(client, userName, recentPages, recentPageSize);
-var lovedTracks = await FetchLovedTracksAsync(client, userName, lovedPages, lovedPageSize);
-var topArtistsByPeriod = await FetchTopArtistsByPeriodAsync(client, userName);
-
-var snapshot = new BeatTrackSnapshot(
-    UserName: userName,
-    FetchedAt: DateTimeOffset.UtcNow,
-    Profile: profile,
-    RecentTracks: recentTracks,
-    TopArtistsByPeriod: topArtistsByPeriod,
-    LovedTracks: lovedTracks);
+var snapshot = await SnapshotFetcher.FetchAsync(client, userName,
+    new SnapshotFetchOptions(recentPages, recentPageSize, lovedPages, lovedPageSize));
 
 var analysis = BeatTrackAnalysis.Analyze(snapshot);
 
@@ -103,21 +93,21 @@ if (!string.IsNullOrWhiteSpace(outputPath))
 
 if (!jsonOnly)
 {
-    Console.WriteLine($"user: {profile.UserName}");
-    Console.WriteLine($"real_name: {profile.RealName ?? string.Empty}");
-    Console.WriteLine($"play_count: {profile.PlayCount?.ToString() ?? string.Empty}");
-    Console.WriteLine($"recent_tracks_fetched: {recentTracks.Count}");
-    Console.WriteLine($"loved_tracks_fetched: {lovedTracks.Count}");
+    Console.WriteLine($"user: {snapshot.Profile.UserName}");
+    Console.WriteLine($"real_name: {snapshot.Profile.RealName ?? string.Empty}");
+    Console.WriteLine($"play_count: {snapshot.Profile.PlayCount?.ToString() ?? string.Empty}");
+    Console.WriteLine($"recent_tracks_fetched: {snapshot.RecentTracks.Count}");
+    Console.WriteLine($"loved_tracks_fetched: {snapshot.LovedTracks.Count}");
     Console.WriteLine();
     Console.WriteLine("recent_track_sample:");
-    foreach (var item in recentTracks.Take(10))
+    foreach (var item in snapshot.RecentTracks.Take(10))
     {
         Console.WriteLine($"- {item.ArtistName} - {item.TrackName} @ {item.PlayedAtUnixTime?.ToString() ?? ""}");
     }
 
     Console.WriteLine();
     Console.WriteLine("top_artists_by_period:");
-    foreach (var pair in topArtistsByPeriod)
+    foreach (var pair in snapshot.TopArtistsByPeriod)
     {
         var top = string.Join(", ", pair.Value.Take(5).Select(static x => $"{x.Name} ({x.PlayCount?.ToString() ?? ""})"));
         Console.WriteLine($"- {pair.Key}: {top}");
@@ -144,7 +134,7 @@ if (!jsonOnly)
         Console.WriteLine($"- {item.CanonicalName}: {string.Join(" | ", item.Variants)}");
     }
 
-    var buckets = BeatTrackTimelineAnalysis.BuildArtistBuckets(recentTracks, bucketSizeHours: 24, topArtistCount: 5);
+    var buckets = BeatTrackTimelineAnalysis.BuildArtistBuckets(snapshot.RecentTracks, bucketSizeHours: 24, topArtistCount: 5);
     Console.WriteLine();
     Console.WriteLine("daily_activity_histogram:");
     foreach (var bucket in buckets.TakeLast(14))
@@ -167,61 +157,6 @@ else
 }
 
 return 0;
-
-static async Task<IReadOnlyList<BeatTrackListeningEvent>> FetchRecentTracksAsync(ILastFmClient client, string userName, int pages, int pageSize)
-{
-    var items = new List<BeatTrackListeningEvent>();
-    for (var page = 1; page <= pages; page++)
-    {
-        var result = (await client.GetRecentTracksAsync(new LastFmRecentTracksRequest(userName, pageSize, page))).ToBeatTrackListeningEvents();
-        items.AddRange(result.Items);
-        if (result.Page >= result.TotalPages || result.Items.Count == 0)
-        {
-            break;
-        }
-    }
-
-    return items;
-}
-
-static async Task<IReadOnlyList<BeatTrackListeningEvent>> FetchLovedTracksAsync(ILastFmClient client, string userName, int pages, int pageSize)
-{
-    var items = new List<BeatTrackListeningEvent>();
-    for (var page = 1; page <= pages; page++)
-    {
-        var result = (await client.GetLovedTracksAsync(new LastFmPagedUserRequest(userName, pageSize, page))).ToBeatTrackLovedListeningEvents();
-        items.AddRange(result.Items);
-        if (result.Page >= result.TotalPages || result.Items.Count == 0)
-        {
-            break;
-        }
-    }
-
-    return items;
-}
-
-static async Task<IReadOnlyDictionary<string, IReadOnlyList<BeatTrackArtistSummary>>> FetchTopArtistsByPeriodAsync(ILastFmClient client, string userName)
-{
-    var periods = new[]
-    {
-        LastFmTimePeriod.SevenDays,
-        LastFmTimePeriod.OneMonth,
-        LastFmTimePeriod.ThreeMonths,
-        LastFmTimePeriod.SixMonths,
-        LastFmTimePeriod.TwelveMonths,
-        LastFmTimePeriod.Overall,
-    };
-
-    var results = new Dictionary<string, IReadOnlyList<BeatTrackArtistSummary>>(StringComparer.Ordinal);
-    foreach (var period in periods)
-    {
-        var response = await client.GetTopArtistsAsync(new LastFmUserChartRequest(userName, period, Limit: 50));
-        var mapped = response.ToBeatTrackArtistSummaries();
-        results[period.ToString()] = mapped.Items;
-    }
-
-    return results;
-}
 
 static int ParsePositiveInt(string? value, int fallback, int? max = null)
 {

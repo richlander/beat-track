@@ -1,3 +1,5 @@
+using BeatTrack.Core.SpokenData;
+
 namespace BeatTrack.Core;
 
 /// <summary>
@@ -18,29 +20,17 @@ public class UserSimilarArtists
 
     public UserSimilarArtists(string filePath)
     {
-        var (_, rows) = MarkdownTableStore.Read(filePath);
-        foreach (var row in rows)
+        var store = new SpokenDataStore(filePath, MusicSpokenSchemas.SimilarArtists, BeatTrackAnalysis.CanonicalizeArtistName);
+
+        foreach (var entry in store.GetAll())
         {
-            if (row.Length >= 2 && !string.IsNullOrWhiteSpace(row[0]) && !string.IsNullOrWhiteSpace(row[1]))
+            if (entry.CanonicalTarget is null)
             {
-                var artist = BeatTrackAnalysis.CanonicalizeArtistName(row[0]);
-                var similarTo = BeatTrackAnalysis.CanonicalizeArtistName(row[1]);
-
-                if (!_graph.TryGetValue(artist, out var list))
-                {
-                    list = [];
-                    _graph[artist] = list;
-                }
-                list.Add(similarTo);
-
-                // Bidirectional: if A is similar to B, B is similar to A
-                if (!_graph.TryGetValue(similarTo, out var reverseList))
-                {
-                    reverseList = [];
-                    _graph[similarTo] = reverseList;
-                }
-                reverseList.Add(artist);
+                continue;
             }
+
+            AddEdge(entry.CanonicalSubject, entry.CanonicalTarget);
+            AddEdge(entry.CanonicalTarget, entry.CanonicalSubject);
         }
     }
 
@@ -60,4 +50,15 @@ public class UserSimilarArtists
     /// Gets all artists that have user-defined similarities.
     /// </summary>
     public IReadOnlyList<string> GetAllArtists() => [.. _graph.Keys];
+
+    private void AddEdge(string from, string to)
+    {
+        if (!_graph.TryGetValue(from, out var list))
+        {
+            list = [];
+            _graph[from] = list;
+        }
+
+        list.Add(to);
+    }
 }
