@@ -19,80 +19,93 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 - The user wants to play music (BeatTrack is analysis-only, not a player)
 - The user needs real-time music streaming or playback control
 
-## First Use
+## Tool Location
 
-Before running any commands, find out what the user has available. Ask them:
+The tool is at `/home/rich/git/beat-track`. All commands run from that directory.
+
+All commands: `dotnet run --project src/BeatTrack.App -- COMMAND [OPTIONS]`
+
+---
+
+## Workflow 1: Establishing the Environment
+
+On first use, find out what the user has available. Ask them:
 
 1. **Do you have a Last.fm account?** If yes, what's your username?
 2. **Do you have a Last.fm API key?** (Get one at https://www.last.fm/api/accounts — it's free and instant.)
 3. **Do you have any other music data?** Discogs collection export, YouTube/Google Takeout, etc.
 
-With just an API key and username, you can immediately run `history` (downloads their full listening history) and `live` (recent scrobbles). No manual file exports needed.
-
-## Setup
-
-The tool is at `/home/rich/git/beat-track`. All commands run from that directory.
-
-### Check what's already configured
+Then check what's already configured:
 
 ```bash
 dotnet run --project src/BeatTrack.App -- status
 ```
 
-This reports: API keys, data files, cache state, and freshness. Use it to determine what commands will work.
+### Setting up the API key
 
-### Data flow
+This is the fastest path to a working system. With just an API key and username, you can fetch the user's complete listening history — no manual exports needed.
 
-There are four categories of data, each with different setup:
-
-**1. API keys** (config file, one-time setup — this is the fastest path to a working system)
-Set `lastfm_api_key` and `lastfm_user` in `~/.config/beat-track/config`:
+Write `~/.config/beat-track/config`:
 ```
 lastfm_api_key=YOUR_KEY
 lastfm_user=YOUR_USERNAME
 ```
-Enables: `live`, `snapshot`, `history`, and richer full analysis. The API key unlocks everything — with it, the tool can fetch the user's complete listening history directly.
 
-**2. Bulk ingestion** (optional historical data, user-provided)
-These are supplementary sources — not required if the user has an API key:
+### Adding supplementary data sources
+
+These are optional and enrich cross-source analysis:
 
 | Source | What it provides | Where to place it |
 | --- | --- | --- |
 | Discogs collection | Physical media ownership | `~/.local/share/beat-track/collection-csv/` |
 | YouTube Takeout | Video listening data | `~/.local/share/beat-track/takeout/extracted/Takeout/` |
 
-**3. App-owned steady state** (grows over time, managed by beat-track)
-- **Spoken data**: `my-favorites.md`, `known-misses.md`, `my-similar-artists.md` in DataDir
+### Data the app manages
+
+These grow over time and don't require user action:
+- **Spoken data**: `my-favorites.md`, `known-misses.md`, `my-similar-artists.md` in `~/.local/share/beat-track/`
 - **Snapshots**: `{username}-snapshot.json` in DataDir (fetched via `snapshot` command)
 - **Caches**: MBID mappings and similar artist data in `~/.cache/beat-track/` (regenerable — safe to delete)
 
-**4. Live updates** (via API keys)
-- `beat-track live` — what's playing now, recent scrobbles
-- `beat-track snapshot` — refresh the Last.fm snapshot
+---
 
-### What works with what
+## Workflow 2: Acquiring Listening Data
 
-| Available data | What you can run |
+### From the Last.fm API (recommended)
+
+With an API key configured, fetch the user's complete history:
+
+```bash
+# Download full scrobble history (~1 min for 60k scrobbles)
+dotnet run --project src/BeatTrack.App -- history
+
+# Fetch a snapshot (top artists by period, loved tracks, MBIDs)
+dotnet run --project src/BeatTrack.App -- snapshot
+```
+
+`history` produces a CSV at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` that all queries read from. `snapshot` produces a JSON file that enables gap analysis and similarity lookups.
+
+### From spoken data
+
+Users can declare preferences directly — these feed into recommendations even without listening history:
+
+| User says | Action |
 | --- | --- |
-| API key only | `live`, `snapshot` |
-| Scrobble CSV | `stats`, `top-artists`, `streaks`, `artist-velocity`, `new-discoveries`, `artist-depth`, `cluster`, `miss` |
-| CSV + snapshot | Full analysis with gap analysis (MBIDs enable similarity lookups) |
-| CSV + snapshot + Discogs/YouTube | Full cross-source analysis (slice comparison, strange absences, re-engagement) |
+| "I love Slowdive" | Add to `~/.local/share/beat-track/my-favorites.md` |
+| "I tried Johnny Marr, not for me" | `miss add "Johnny Marr" --reason "doesn't grab me"` |
+| "Slowdive sounds like My Bloody Valentine" | Add to `~/.local/share/beat-track/my-similar-artists.md` |
+| "Actually, give Johnny Marr another chance" | `miss remove "Johnny Marr"` |
+| "Show my known misses" | `miss` |
 
-## Available Commands
+Favorites and similarity entries are hand-edited markdown tables. Known misses have CLI commands for add/remove.
 
-All commands: `dotnet run --project src/BeatTrack.App -- COMMAND [OPTIONS]`
+These are automatically used in analysis: favorites seed gap analysis, misses are excluded from all recommendations, and user-defined similarities supplement the ListenBrainz graph.
 
-### Live data (API key required)
+---
 
-| User prompt | Command | What it shows |
-| --- | --- | --- |
-| "What's playing right now?" | `live -n 5` | Last 5 scrobbles with now-playing indicator |
-| "What did I listen to today?" | `live -n 50` | Recent scrobble history |
-| "Follow my scrobbles" | `live -f` | Continuous polling (ctrl-c to stop) |
-| "Refresh my snapshot" | `snapshot` | Fetches and saves Last.fm snapshot to DataDir |
+## Workflow 3: Baseline Reports
 
-### Quick queries (scrobble CSV, fast)
+These require a scrobble CSV (from `history` or manual import). They're fast and don't call any APIs.
 
 | User prompt | Command | What it shows |
 | --- | --- | --- |
@@ -102,145 +115,142 @@ All commands: `dotnet run --project src/BeatTrack.App -- COMMAND [OPTIONS]`
 | "Show me my listening streaks" | `streaks` | Longest consecutive-day streaks, overall and per-artist |
 | "How long was my Massive Attack streak?" | `streaks --artist "Massive Attack"` | All streaks for a specific artist |
 | "Show me how my top artists grew over time" | `artist-velocity --top 10 --bucket yearly` | Cumulative scrobble curves |
-| "Compare Radiohead vs Caribou over time" | `artist-velocity --artists "Radiohead,Caribou" --bucket monthly` | Side-by-side growth |
-| "Any new discoveries this week?" | `new-discoveries --window 7d` | Engagement gradient: new discoveries, first clicks, rediscoveries, longtime fans |
-| "What have I discovered this month?" | `new-discoveries --window 30d` | Same gradient over 30 days |
-| "What artists finally clicked?" | `new-discoveries --window 60d --prior-threshold 10` | Raise prior-play ceiling to catch more "first click" artists |
+| "Any new discoveries this week?" | `new-discoveries --window 7d` | Engagement gradient: new discoveries, first clicks, rediscoveries |
 | "Which artists do I explore deeply?" | `artist-depth --mode deep` | Catalog explorers: most unique tracks/albums |
-| "Which artists am I a one-hit wonder for?" | `artist-depth --mode shallow` | One-hit wonders: high plays concentrated on 1-2 tracks |
-| "Show artist depth for this year" | `artist-depth --mode all --window 365d` | All artists by plays with depth metrics |
+| "Which artists am I a one-hit wonder for?" | `artist-depth --mode shallow` | One-hit wonders: high plays on 1-2 tracks |
 
-### Cross-source analysis (all data, may call APIs on first run)
+---
 
-| User prompt | Command | What it shows |
-| --- | --- | --- |
-| "Run the full analysis" | *(no args)* | Everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences |
-| "What am I currently into?" | Run full, look at `new_interests` and `surging` sections | Artists appearing for the first time or accelerating recently |
-| "What should I revisit?" | Run full, look at `Re-engage` and `dormant favorites` sections | Forgotten favorites similar to current listening |
-| "What artists am I surprisingly not listening to?" | Run full, look at `Strange absences` section | Artists similar to many active favorites but completely absent |
-| "What music am I missing?" | Run full, look at `Gap analysis` section | Artists in the similarity graph of your favorites that you've never heard |
+## Workflow 4: Advanced Reports and Queries
 
-## User Preferences (Spoken Data)
+These require a scrobble CSV + snapshot. May call ListenBrainz/MusicBrainz APIs on first run (results are cached).
 
-User-voiced preferences are stored as markdown tables in `~/.local/share/beat-track/` and are hand-editable.
+### Full analysis
 
-### Known misses (artists to skip in recommendations)
+```bash
+dotnet run --project src/BeatTrack.App
+```
+
+Runs everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences.
+
+| User prompt | What to look at |
+| --- | --- |
+| "What am I currently into?" | `new_interests` and `surging` sections |
+| "What should I revisit?" | `Re-engage` and `dormant favorites` sections |
+| "What artists am I surprisingly not listening to?" | `Strange absences` section |
+| "What music am I missing?" | `Gap analysis` section |
+
+### Live data queries (API key required)
 
 | User prompt | Command |
 | --- | --- |
-| "I tried Johnny Marr, not for me" | `miss add "Johnny Marr" --reason "doesn't grab me"` |
-| "Show my known misses" | `miss` |
-| "Actually, give Johnny Marr another chance" | `miss remove "Johnny Marr"` |
+| "What's playing right now?" | `live -n 5` |
+| "What did I listen to today?" | `live -n 50` |
+| "Follow my scrobbles" | `live -f` |
 
-Automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites.
+### Proactive discovery check
 
-### Favorites and similarity graph
-
-These files are edited directly (not via CLI commands):
-
-- **`my-favorites.md`** — seed artists for gap analysis even without listening history
-- **`my-similar-artists.md`** — user-defined artist similarity relationships (supplements ListenBrainz data)
-
-## Proactive Discovery Check
-
-When greeting the user or starting a session, run `new-discoveries --window 7d` to check for recent activity. The query classifies active artists along an engagement gradient:
+When greeting the user or starting a session, run `new-discoveries --window 7d`. It classifies recent activity:
 
 | Category | What it means | How to respond |
 | --- | --- | --- |
-| **New discovery** | Zero prior plays — completely new artist | "You've picked up X this week" — offer similar artists or playlist suggestions |
-| **First click** | Had a few stray plays before, but now truly engaging | "X seems to have clicked" — this is often the most interesting signal; the artist was on the radar but never landed until now |
-| **Rediscovery** | Real prior engagement, went dormant, now back | "Welcome back to X" — acknowledge the return, suggest what else they might revisit |
-| **Longtime fan** | Continuously engaged, no gap | Don't comment unless asked — this is expected behavior, not news |
+| **New discovery** | Zero prior plays | "You've picked up X this week" — offer similar artists |
+| **First click** | Had stray plays before, now truly engaging | "X seems to have clicked" — most interesting signal |
+| **Rediscovery** | Was dormant, now back | "Welcome back to X" — suggest what else to revisit |
+| **Longtime fan** | Continuously engaged | Don't comment unless asked |
 
-Only comment on artists that show real engagement:
+Only comment on real engagement: **10+ plays** = genuine interest, **3-9** = mention briefly, **1-2** = ignore completely. Statements like "I see you played X" when X has 1-2 plays feel like surveillance, not insight.
 
-1. **10+ plays** — genuine interest. Comment and offer to find similar artists or build a playlist around them.
-2. **3-9 plays** — possible interest. Mention briefly, ask if they're enjoying it.
-3. **1-2 plays** — ignore. A single play is not a signal. Do not mention one-off plays to the user — it feels noisy and presumptuous.
+### Validating recommendations
 
-**First click** and **rediscovery** are the most conversation-worthy categories. A new discovery is obvious to the listener; a longtime fan needs no commentary. But "this artist finally clicked" or "you've come back to this one" surfaces something the listener may not have consciously noticed.
-
-In general, never highlight an artist based on minimal listening. Statements like "I see you played X this week" when X has 1-2 plays come across as surveillance, not insight. Wait for the data to show a pattern before surfacing it.
-
-## Validating Recommendations
-
-**Never recommend an artist without checking the scrobble data first.** Every artist you suggest must be checked against the listening history so you can frame the recommendation correctly. Saying "try Alvvays" to someone with 600+ scrobbles is worse than no recommendation — it signals you aren't paying attention.
-
-Before presenting any recommendation, grep the scrobble CSV for the artist:
+**Never recommend an artist without checking the scrobble data first.** Saying "try Alvvays" to someone with 600+ scrobbles signals you aren't paying attention.
 
 ```bash
 grep -i "artist name" ~/.local/share/beat-track/lastfmstats/lastfmstats-*.csv 2>/dev/null | wc -l
 ```
 
-Then frame the recommendation based on what you find:
-
 | What the data shows | How to frame it |
 | --- | --- |
 | **Zero plays** | True discovery — "you haven't heard X, and they fit because..." |
-| **A few plays, long ago** | First click opportunity — "X has been on your radar but never clicked — now might be the time because..." |
-| **Significant plays, then a gap** | Revisit — "you used to be into X — worth coming back to because..." |
-| **Hundreds of plays, concentrated on 1-2 albums** | Catalog dig — don't say "try X." Instead: "you've got 400 plays of X but they're all Antisocialites and the self-titled — have you heard Blue Rev?" Point to the albums or tracks they're missing, especially newer releases or deep cuts. |
-| **Hundreds of plays, broad catalog** | Already a true fan — don't recommend the artist at all. Use them as a taste anchor ("since you love X, try Y"). |
+| **A few plays, long ago** | First click — "X has been on your radar but never clicked..." |
+| **Significant plays, then a gap** | Revisit — "you used to be into X..." |
+| **Hundreds of plays, 1-2 albums** | Catalog dig — point to albums/tracks they're missing |
+| **Hundreds of plays, broad catalog** | Already a fan — use as taste anchor, don't recommend |
 
-### The catalog dig is the highest-value recommendation
+The **catalog dig** is the highest-value recommendation. Use `artist-depth --mode all` to find artists where `TopTrackShare` is high or `Albums` is low relative to their discography.
 
-When someone is deeply invested in an artist but concentrated on a subset of the catalog, that's the easiest win. They already love the artist — you're just pointing to the room they haven't walked into yet. Use `artist-depth` to identify these:
+---
 
-```bash
-dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window all
-```
+## Workflow 5: Updating Listening Data
 
-If `TopTrackShare` is high or `Albums` is low relative to the artist's actual discography, there's unexplored material. Prioritize:
-1. **Newer releases** they may not know about
-2. **Earlier/deeper albums** that match the sound of what they already play
-3. **Tracks by the same artist** that are stylistically close to their most-played
-
-### Depth-aware recommendation types
-
-- **Deep mode** (`--mode deep`) surfaces `true_love_artists` — high track diversity across many months. These are the user's core taste and the best seeds for similar-artist recommendations.
-- **Shallow mode** (`--mode shallow`) surfaces one-hit wonders with actionable recommendations:
-  - **Covers** are detected automatically (e.g. "Get Lucky (Daft Punk cover)" by Daughter → recommend Daft Punk)
-  - **Remixes** point to the original artist or remixer
-  - **Track fixations** suggest exploring that artist's broader catalog
-
-## Combining Queries for Playlists
-
-To build a personalized playlist recommendation, run multiple queries and synthesize:
-
-### Step 1: Assess current state
+### Refreshing from the API
 
 ```bash
-dotnet run --project src/BeatTrack.App -- top-artists --window 7d
-dotnet run --project src/BeatTrack.App -- top-artists --window 30d
-dotnet run --project src/BeatTrack.App -- artist-depth --mode deep --limit 10
+# Re-download full history (overwrites existing CSV)
+dotnet run --project src/BeatTrack.App -- history
+
+# Refresh snapshot (top artists, loved tracks, MBIDs)
+dotnet run --project src/BeatTrack.App -- snapshot
 ```
 
-### Step 2: Find what to add
+### Refreshing supplementary sources
 
-Run `new-discoveries --window 30d` and the full analysis, then extract:
-- **First clicks** — artists that just landed; lean into the momentum
-- **Rediscoveries** — returning favorites; pair with their catalog depth
-- **Surging artists** — double down on what's hot
-- **Re-engagement suggestions** — dormant favorites that fit the current mood
-- **Strange absences with low seed counts (3-5)** — targeted recommendations, not universal connectors
+- **Discogs**: Re-export CSV from Discogs if collection changed
+- **YouTube**: Re-download Google Takeout if needed
 
-### Step 3: Build the playlist
+### Cache management
 
-Mix from three buckets:
-- 40% current favorites (from top-artists 7d)
-- 30% re-engagement picks (dormant favorites similar to current listening)
-- 30% discovery (strange absences or gap artists with highest seed overlap to current rotation)
+Caches grow incrementally and are safe to delete:
+```bash
+rm -rf ~/.cache/beat-track/
+```
+They'll rebuild on the next full analysis run.
 
-## Updating Data
+---
 
-**Snapshot** (via API key): `dotnet run --project src/BeatTrack.App -- snapshot`
+## Common Workflows
 
-**Bulk data** (manual re-export):
-1. Re-download scrobble history CSV from lastfmstats.com (replaces old file)
-2. Re-export Discogs collection if collection changed
-3. Re-download YouTube Takeout if needed
+### "What should I listen to right now?"
 
-**Caches**: The MBID cache and similar artist caches grow incrementally. Delete `~/.cache/beat-track/` to force a full refresh.
+1. `live -n 10` — see what's playing / recently played
+2. `new-discoveries --window 7d` — what's new or clicking
+3. `top-artists --window 7d` — current rotation
+4. Use full analysis `Strange absences` for targeted recommendations
+
+### "Build me a playlist"
+
+1. `top-artists --window 7d` + `top-artists --window 30d` — current rotation
+2. `artist-depth --mode deep --limit 10` — true love artists
+3. `new-discoveries --window 30d` — first clicks, rediscoveries, surging
+4. Run full analysis for re-engagement and strange absence picks
+5. Mix: 40% current favorites, 30% re-engagement, 30% discovery
+
+### "I want to discover new music"
+
+1. Run full analysis → `Gap analysis` section (similar to favorites, never heard)
+2. `Strange absences` (similar to many active artists, completely absent)
+3. `artist-depth --mode shallow` — find covers/remixes that point to new artists
+4. Validate every recommendation against scrobble data before presenting
+
+### "Tell me about my listening habits"
+
+1. `stats` — overall picture (span, Eddington number, one-hit-wonders)
+2. `top-artists --window 365d` vs `top-artists --window 30d` — what's stable vs shifting
+3. `streaks` — commitment patterns
+4. `artist-velocity --top 10 --bucket yearly` — how taste evolved over time
+5. `new-discoveries --window 60d` — engagement gradient
+
+### Recording user preferences during conversation
+
+When the user mentions artists they like or dislike during any conversation:
+
+- **Likes**: Add to `my-favorites.md` if they express strong preference
+- **Dislikes**: `miss add "Artist" --reason "reason"` if they reject a recommendation
+- **Relationships**: Add to `my-similar-artists.md` if they say "X sounds like Y"
+
+These accumulate over time and improve future recommendations.
+
+---
 
 ## Adding New Queries
 
@@ -274,19 +284,7 @@ public static class MyQuery
 }
 ```
 
-### Register the command
-
-Add routing in `src/BeatTrack.App/Program.cs` at the quick-path command dispatch:
-
-```csharp
-if (args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "my-query")
-```
-
-And add the case:
-
-```csharp
-"my-query" => MyQuery.Run(allScrobbles, args[1..]),
-```
+Register in `src/BeatTrack.App/Program.cs` at the quick-path command dispatch.
 
 ### Key types
 
