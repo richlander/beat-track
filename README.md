@@ -4,27 +4,46 @@ Cross-source music listening analysis. Merges data from Last.fm, YouTube, and Di
 
 Built with .NET 11, AOT-compatible, zero external runtime dependencies.
 
+## Install
+
+No .NET required — downloads a self-contained native binary.
+
+**Linux / macOS:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/richlander/beat-track/main/install.sh | sh
+```
+
+**Windows:**
+
+```powershell
+irm https://raw.githubusercontent.com/richlander/beat-track/main/install.ps1 | iex
+```
+
 ## Quick start
+
+```bash
+# Set up your Last.fm API key (get one at https://www.last.fm/api/accounts)
+mkdir -p ~/.config/beat-track
+echo "lastfm_api_key=YOUR_KEY" >> ~/.config/beat-track/config
+echo "lastfm_user=YOUR_USERNAME" >> ~/.config/beat-track/config
+
+# Download your full listening history
+beat-track history
+
+# Explore
+beat-track stats
+beat-track top-artists --window 30d
+beat-track live -n 10
+```
+
+### Building from source
 
 ```bash
 git clone https://github.com/richlander/beat-track.git
 cd beat-track
 dotnet build
-```
-
-Check what data you have and what's needed:
-
-```bash
 dotnet run --project src/BeatTrack.App -- status
-```
-
-Start with your Last.fm scrobble history (see [Data sources](#data-sources)), then:
-
-```bash
-dotnet run --project src/BeatTrack.App -- stats
-dotnet run --project src/BeatTrack.App -- top-artists --window 30d
-dotnet run --project src/BeatTrack.App -- streaks
-dotnet run --project src/BeatTrack.App -- artist-velocity --top 5 --bucket yearly
 ```
 
 ## Using without data
