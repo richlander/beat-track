@@ -1,3 +1,5 @@
+using BeatTrack.Core.SpokenData;
+
 namespace BeatTrack.Core;
 
 /// <summary>
@@ -12,29 +14,23 @@ namespace BeatTrack.Core;
 /// </summary>
 public class UserFavorites
 {
-    private readonly List<(string CanonicalName, string DisplayName, string? Notes)> _favorites = [];
+    private readonly SpokenDataStore _store;
 
     public UserFavorites(string filePath)
     {
-        var (_, rows) = MarkdownTableStore.Read(filePath);
-        foreach (var row in rows)
-        {
-            if (row.Length >= 1 && !string.IsNullOrWhiteSpace(row[0]))
-            {
-                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(row[0]);
-                var notes = row.Length > 1 && !string.IsNullOrWhiteSpace(row[1]) ? row[1] : null;
-                _favorites.Add((canonical, row[0], notes));
-            }
-        }
+        _store = new SpokenDataStore(filePath, MusicSpokenSchemas.Favorites, BeatTrackAnalysis.CanonicalizeArtistName);
     }
 
-    public int Count => _favorites.Count;
+    public int Count => _store.Count;
 
-    public IReadOnlyList<(string CanonicalName, string DisplayName, string? Notes)> GetAll() => _favorites;
+    public IReadOnlyList<(string CanonicalName, string DisplayName, string? Notes)> GetAll() =>
+        _store.GetAll()
+            .Select(static e => (e.CanonicalSubject, e.DisplaySubject, e.Reason))
+            .ToList();
 
     /// <summary>
     /// Gets canonical names of all favorite artists.
     /// </summary>
     public IReadOnlyList<string> GetCanonicalNames() =>
-        _favorites.Select(static f => f.CanonicalName).ToList();
+        _store.GetAllCanonicalSubjects();
 }
