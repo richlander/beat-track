@@ -12,147 +12,127 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 - The user wants to compare their listening across platforms (Last.fm, YouTube, Discogs)
 - The user wants playlist suggestions based on surging interests, re-engagement, or gaps
 - The user asks "what should I listen to?" or "what am I missing?"
+- The user asks "what did I listen to today?" or "what's playing?"
 
 ## When Not to Use
 
 - The user wants to play music (BeatTrack is analysis-only, not a player)
 - The user needs real-time music streaming or playback control
 
-## Prerequisites
+## Setup
 
-The tool is at `/home/rich/.openclaw/workspace/git/beat-track`. All commands run from that directory.
+The tool is at `/home/rich/git/beat-track`. All commands run from that directory.
 
-Data lives at `~/.local/share/beat-track/` (XDG) or legacy `~/.beattrack/data/`. At minimum, a Last.fm scrobble history CSV is needed.
-
-## Check What's Available
-
-Before running any commands, check what data and API keys are present. Run these checks and note the results — they determine which commands will work.
-
-The tool searches multiple directories for each data file (env var, then workspace, then project, then home). The checks below mirror that search order.
-
-### Data files
+### Check what's available
 
 ```bash
-# Scrobble CSV (required for all quick queries)
-# Search: env var → workspace → home
-ls ${BEAT_TRACK_LASTFM_STATS_CSV:-/dev/null} \
-   ~/.openclaw/workspace/data/lastfmstats/lastfmstats-*.csv \
-   ~/.local/share/beat-track/lastfmstats/lastfmstats-*.csv \
-   ~/.beattrack/data/lastfmstats/lastfmstats-*.csv 2>/dev/null
-
-# Last.fm API snapshot (needed for full analysis MBIDs)
-# Search: env var → project data/ → workspace → home
-ls ${BEAT_TRACK_SNAPSHOT_PATH:-/dev/null} \
-   ~/.openclaw/workspace/git/beat-track/data/*-snapshot.json \
-   ~/.openclaw/workspace/data/*-snapshot.json \
-   ~/.local/share/beat-track/*-snapshot.json \
-   ~/.beattrack/data/*-snapshot.json 2>/dev/null
-
-# Discogs collection (needed for cross-source analysis)
-# Search: env var → workspace → home
-ls ${BEAT_TRACK_DISCOGS_CSV:-/dev/null} \
-   ~/.openclaw/workspace/data/collection-csv/*-collection-*.csv \
-   ~/.local/share/beat-track/collection-csv/*-collection-*.csv \
-   ~/.beattrack/data/collection-csv/*-collection-*.csv 2>/dev/null
-
-# YouTube Takeout (needed for cross-source analysis)
-# Search: env var → workspace → home
-ls ${BEAT_TRACK_TAKEOUT_DIR:-/dev/null}/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
-   ~/.openclaw/workspace/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
-   ~/.local/share/beat-track/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html \
-   ~/.beattrack/data/takeout/extracted/Takeout/YouTube\ and\ YouTube\ Music/history/watch-history.html 2>/dev/null
-
-# MBID and similar artist caches (grow over time, not required)
-ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/mbid-cache.md 2>/dev/null
-ls ${BEAT_TRACK_CACHE_DIR:-~/.cache/beat-track}/similar-artists/*.md 2>/dev/null | wc -l
-```
-
-### Configuration and API keys
-
-```bash
-# Check status (data availability, config, freshness)
 dotnet run --project src/BeatTrack.App -- status
-
-# Config file (API key, username)
-cat ~/.config/beat-track/config 2>/dev/null
-
-# Last.fm API key fallback (config file is preferred over env var)
-echo "${LASTFM_API_KEY:+set}"
 ```
+
+This reports: API keys, data files, cache state, and freshness. Use it to determine what commands will work.
+
+### Data flow
+
+There are four categories of data, each with different setup:
+
+**1. API keys** (config file, one-time setup)
+Set `lastfm_api_key` and `lastfm_user` in `~/.config/beat-track/config`:
+```
+lastfm_api_key=YOUR_KEY
+lastfm_user=YOUR_USERNAME
+```
+Enables: `live`, `snapshot`, and richer full analysis.
+
+**2. Bulk ingestion** (historical data, user-provided)
+One-time imports — the user exports these from external services:
+
+| Source | What it provides | Where to place it |
+| --- | --- | --- |
+| Last.fm scrobble CSV | Full listening history with timestamps | `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` |
+| Discogs collection | Physical media ownership | `~/.local/share/beat-track/collection-csv/` |
+| YouTube Takeout | Video listening data | `~/.local/share/beat-track/takeout/extracted/Takeout/` |
+
+The scrobble CSV is the minimum — export from [lastfmstats.com](https://lastfmstats.com).
+
+**3. App-owned steady state** (grows over time, managed by beat-track)
+- **Spoken data**: `my-favorites.md`, `known-misses.md`, `my-similar-artists.md` in DataDir
+- **Snapshots**: `{username}-snapshot.json` in DataDir (fetched via `snapshot` command)
+- **Caches**: MBID mappings and similar artist data in `~/.cache/beat-track/` (regenerable — safe to delete)
+
+**4. Live updates** (via API keys)
+- `beat-track live` — what's playing now, recent scrobbles
+- `beat-track snapshot` — refresh the Last.fm snapshot
 
 ### What works with what
 
 | Available data | What you can run |
 | --- | --- |
-| Scrobble CSV only | All quick queries: `stats`, `top-artists`, `streaks`, `artist-velocity`, `new-discoveries`, `artist-depth`, `miss` |
-| + Snapshot | Full analysis with gap analysis (MBIDs enable similarity lookups) |
-| + Discogs and/or YouTube | Full cross-source analysis (slice comparison, strange absences, re-engagement) |
-| API key in config or env | Live scrobble feed, snapshot fetching |
+| API key only | `live`, `snapshot` |
+| Scrobble CSV | `stats`, `top-artists`, `streaks`, `artist-velocity`, `new-discoveries`, `artist-depth`, `cluster`, `miss` |
+| CSV + snapshot | Full analysis with gap analysis (MBIDs enable similarity lookups) |
+| CSV + snapshot + Discogs/YouTube | Full cross-source analysis (slice comparison, strange absences, re-engagement) |
 
-If nothing is found, help the user set up their first data source (see below).
+## Available Commands
 
-## Setting Up Data
+All commands: `dotnet run --project src/BeatTrack.App -- COMMAND [OPTIONS]`
 
-1. **Quickest path**: Export scrobble history from [lastfmstats.com](https://lastfmstats.com) → CSV → place at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv`
-2. **With API key**: Add `lastfm_api_key=KEY` to `~/.config/beat-track/config` and run the snapshot tool for richer metadata
-3. Even a few days of scrobbles is enough to run `stats` and `top-artists`
-
-## Data Sources
-
-| Source | What it provides | How to get it |
-| --- | --- | --- |
-| Last.fm scrobble CSV | Full listening history with timestamps | Export from lastfmstats.com, place in `~/.local/share/beat-track/lastfmstats/` |
-| Last.fm API snapshot | Top artists with MBIDs, loved tracks | Add API key to config, run `dotnet run --project src/BeatTrack.LastFm.App -- USERNAME` |
-| Discogs collection | Physical media ownership | Export CSV from Discogs, place in `~/.local/share/beat-track/collection-csv/` |
-| YouTube watch history | Video listening data | Google Takeout → YouTube, extract to `~/.local/share/beat-track/takeout/extracted/Takeout/` |
-| Spotify (planned) | Streaming history | Not yet supported — extended streaming history from Spotify privacy export is on the roadmap |
-
-## Available Queries
-
-### Quick queries (scrobble CSV only, fast)
+### Live data (API key required)
 
 | User prompt | Command | What it shows |
 | --- | --- | --- |
-| "What are my listening stats?" | `dotnet run --project src/BeatTrack.App -- stats` | Eddington number, total artists, span, one-hit-wonders, busiest periods |
-| "What am I listening to this week?" | `dotnet run --project src/BeatTrack.App -- top-artists --window 7d` | Top artists by play count in last 7 days |
-| "What are my top artists this year?" | `dotnet run --project src/BeatTrack.App -- top-artists --window 365d` | Top artists by play count in last year |
-| "Show me my listening streaks" | `dotnet run --project src/BeatTrack.App -- streaks` | Longest consecutive-day streaks, overall and per-artist |
-| "How long was my Massive Attack streak?" | `dotnet run --project src/BeatTrack.App -- streaks --artist "Massive Attack"` | All streaks for a specific artist |
-| "Show me how my top artists grew over time" | `dotnet run --project src/BeatTrack.App -- artist-velocity --top 10 --bucket yearly` | Cumulative scrobble curves |
-| "Compare Radiohead vs Caribou over time" | `dotnet run --project src/BeatTrack.App -- artist-velocity --artists "Radiohead,Caribou" --bucket monthly` | Side-by-side growth |
-| "Any new discoveries this week?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 7d` | Engagement gradient: new discoveries, first clicks, rediscoveries, longtime fans |
-| "What have I discovered this month?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 30d` | Same gradient over 30 days |
-| "What artists finally clicked?" | `dotnet run --project src/BeatTrack.App -- new-discoveries --window 60d --prior-threshold 10` | Raise prior-play ceiling to catch more "first click" artists |
-| "Which artists do I explore deeply?" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode deep` | Catalog explorers: most unique tracks/albums |
-| "Which artists am I a one-hit wonder for?" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode shallow` | One-hit wonders: high plays concentrated on 1-2 tracks |
-| "Show artist depth for this year" | `dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window 365d` | All artists by plays with depth metrics |
+| "What's playing right now?" | `live -n 5` | Last 5 scrobbles with now-playing indicator |
+| "What did I listen to today?" | `live -n 50` | Recent scrobble history |
+| "Follow my scrobbles" | `live -f` | Continuous polling (ctrl-c to stop) |
+| "Refresh my snapshot" | `snapshot` | Fetches and saves Last.fm snapshot to DataDir |
+
+### Quick queries (scrobble CSV, fast)
+
+| User prompt | Command | What it shows |
+| --- | --- | --- |
+| "What are my listening stats?" | `stats` | Eddington number, total artists, span, one-hit-wonders, busiest periods |
+| "What am I listening to this week?" | `top-artists --window 7d` | Top artists by play count in last 7 days |
+| "What are my top artists this year?" | `top-artists --window 365d` | Top artists by play count in last year |
+| "Show me my listening streaks" | `streaks` | Longest consecutive-day streaks, overall and per-artist |
+| "How long was my Massive Attack streak?" | `streaks --artist "Massive Attack"` | All streaks for a specific artist |
+| "Show me how my top artists grew over time" | `artist-velocity --top 10 --bucket yearly` | Cumulative scrobble curves |
+| "Compare Radiohead vs Caribou over time" | `artist-velocity --artists "Radiohead,Caribou" --bucket monthly` | Side-by-side growth |
+| "Any new discoveries this week?" | `new-discoveries --window 7d` | Engagement gradient: new discoveries, first clicks, rediscoveries, longtime fans |
+| "What have I discovered this month?" | `new-discoveries --window 30d` | Same gradient over 30 days |
+| "What artists finally clicked?" | `new-discoveries --window 60d --prior-threshold 10` | Raise prior-play ceiling to catch more "first click" artists |
+| "Which artists do I explore deeply?" | `artist-depth --mode deep` | Catalog explorers: most unique tracks/albums |
+| "Which artists am I a one-hit wonder for?" | `artist-depth --mode shallow` | One-hit wonders: high plays concentrated on 1-2 tracks |
+| "Show artist depth for this year" | `artist-depth --mode all --window 365d` | All artists by plays with depth metrics |
 
 ### Cross-source analysis (all data, may call APIs on first run)
 
 | User prompt | Command | What it shows |
 | --- | --- | --- |
-| "Run the full analysis" | `dotnet run --project src/BeatTrack.App` | Everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences |
+| "Run the full analysis" | *(no args)* | Everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences |
 | "What am I currently into?" | Run full, look at `new_interests` and `surging` sections | Artists appearing for the first time or accelerating recently |
 | "What should I revisit?" | Run full, look at `Re-engage` and `dormant favorites` sections | Forgotten favorites similar to current listening |
 | "What artists am I surprisingly not listening to?" | Run full, look at `Strange absences` section | Artists similar to many active favorites but completely absent |
 | "What music am I missing?" | Run full, look at `Gap analysis` section | Artists in the similarity graph of your favorites that you've never heard |
 
+## User Preferences (Spoken Data)
+
+User-voiced preferences are stored as markdown tables in `~/.local/share/beat-track/` and are hand-editable.
+
 ### Known misses (artists to skip in recommendations)
-
-| User prompt | Command | What it shows |
-| --- | --- | --- |
-| "I tried Johnny Marr, not for me" | `dotnet run --project src/BeatTrack.App -- miss add "Johnny Marr" --reason "doesn't grab me"` | Adds to known misses, excluded from future recommendations |
-| "Show my known misses" | `dotnet run --project src/BeatTrack.App -- miss` | Lists all artists marked as misses |
-| "Actually, give Johnny Marr another chance" | `dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"` | Removes from known misses |
-
-Known misses are stored at `~/.local/share/beat-track/known-misses.md` and are automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites in the full analysis.
-
-### Live scrobble feed (requires API key in config or env)
 
 | User prompt | Command |
 | --- | --- |
-| "What's playing right now?" | `dotnet run --project src/BeatTrack.LastFm.App -- live -n 5 USERNAME` |
-| "Follow my scrobbles" | `dotnet run --project src/BeatTrack.LastFm.App -- live -f USERNAME` |
+| "I tried Johnny Marr, not for me" | `miss add "Johnny Marr" --reason "doesn't grab me"` |
+| "Show my known misses" | `miss` |
+| "Actually, give Johnny Marr another chance" | `miss remove "Johnny Marr"` |
+
+Automatically filtered from gap analysis, strange absences, re-engagement, and dormant favorites.
+
+### Favorites and similarity graph
+
+These files are edited directly (not via CLI commands):
+
+- **`my-favorites.md`** — seed artists for gap analysis even without listening history
+- **`my-similar-artists.md`** — user-defined artist similarity relationships (supplements ListenBrainz data)
 
 ## Proactive Discovery Check
 
@@ -182,7 +162,7 @@ In general, never highlight an artist based on minimal listening. Statements lik
 Before presenting any recommendation, grep the scrobble CSV for the artist:
 
 ```bash
-grep -i "artist name" ~/.openclaw/workspace/data/lastfmstats/lastfmstats-*.csv 2>/dev/null | wc -l
+grep -i "artist name" ~/.local/share/beat-track/lastfmstats/lastfmstats-*.csv 2>/dev/null | wc -l
 ```
 
 Then frame the recommendation based on what you find:
@@ -200,7 +180,6 @@ Then frame the recommendation based on what you find:
 When someone is deeply invested in an artist but concentrated on a subset of the catalog, that's the easiest win. They already love the artist — you're just pointing to the room they haven't walked into yet. Use `artist-depth` to identify these:
 
 ```bash
-# Check specific artist depth — look at UniqueTracks, Albums, TopTrackShare
 dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window all
 ```
 
@@ -229,8 +208,6 @@ dotnet run --project src/BeatTrack.App -- top-artists --window 30d
 dotnet run --project src/BeatTrack.App -- artist-depth --mode deep --limit 10
 ```
 
-Identify the user's current rotation, recent favorites, and true love artists.
-
 ### Step 2: Find what to add
 
 Run `new-discoveries --window 30d` and the full analysis, then extract:
@@ -239,7 +216,6 @@ Run `new-discoveries --window 30d` and the full analysis, then extract:
 - **Surging artists** — double down on what's hot
 - **Re-engagement suggestions** — dormant favorites that fit the current mood
 - **Strange absences with low seed counts (3-5)** — targeted recommendations, not universal connectors
-- **Shallow one-hit wonders** (`artist-depth --mode shallow`) — check if the user should explore the original artist (covers) or the artist's catalog
 
 ### Step 3: Build the playlist
 
@@ -248,19 +224,16 @@ Mix from three buckets:
 - 30% re-engagement picks (dormant favorites similar to current listening)
 - 30% discovery (strange absences or gap artists with highest seed overlap to current rotation)
 
-Present as a named list the user can transfer to their streaming platform.
-
 ## Updating Data
 
-When the user wants fresh data:
+**Snapshot** (via API key): `dotnet run --project src/BeatTrack.App -- snapshot`
 
+**Bulk data** (manual re-export):
 1. Re-download scrobble history CSV from lastfmstats.com (replaces old file)
 2. Re-export Discogs collection if collection changed
 3. Re-download YouTube Takeout if needed
-4. Delete `~/.cache/beat-track/` to force re-resolution of MBIDs and similar artists
-5. Re-run: `dotnet run --project src/BeatTrack.App`
 
-The MBID cache (`~/.cache/beat-track/mbid-cache.md`) and similar artist caches (`~/.cache/beat-track/similar-artists/`) persist across runs and grow incrementally. Only delete them to force a full refresh.
+**Caches**: The MBID cache and similar artist caches grow incrementally. Delete `~/.cache/beat-track/` to force a full refresh.
 
 ## Adding New Queries
 
@@ -275,19 +248,14 @@ public static class MyQuery
 {
     public static int Run(IReadOnlyList<LastFmScrobble> scrobbles, string[] args)
     {
-        // Parse args
         var window = ParseStringFlag(args, "--window") ?? "30d";
-
-        // Filter scrobbles by time window
         var cutoffMs = TopArtistsQuery.ParseWindowCutoff(window);
         var filtered = scrobbles.Where(s => s.TimestampMs >= cutoffMs && s.TimestampMs > 0);
 
-        // Group by canonical artist name
         var groups = filtered.GroupBy(
             s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName),
             StringComparer.OrdinalIgnoreCase);
 
-        // Analyze and output
         Console.WriteLine("my_query:");
         foreach (var g in groups.OrderByDescending(g => g.Count()).Take(20))
         {
@@ -301,10 +269,10 @@ public static class MyQuery
 
 ### Register the command
 
-Add routing in `src/BeatTrack.App/Program.cs` at the top-level command dispatch:
+Add routing in `src/BeatTrack.App/Program.cs` at the quick-path command dispatch:
 
 ```csharp
-if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "artist-velocity" or "my-query")
+if (args[0].ToLowerInvariant() is "stats" or "streaks" or "top-artists" or "my-query")
 ```
 
 And add the case:
@@ -323,4 +291,5 @@ And add the case:
 | `ArtistNameMatcher` | Fuzzy name resolution across sources |
 | `MbidCache` | Load/save artist → MusicBrainz ID mappings |
 | `MarkdownTableStore` | Persist tabular data as markdown tables |
+| `SpokenDataStore` | Domain-agnostic user preference store |
 | `TopArtistsQuery.ParseWindowCutoff("30d")` | Reusable time window parsing |

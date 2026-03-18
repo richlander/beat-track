@@ -1,7 +1,6 @@
 using BeatTrack.Core;
-using BeatTrack.LastFm;
 
-namespace BeatTrack.LastFm.App;
+namespace BeatTrack.LastFm;
 
 /// <summary>
 /// Live mode: polls Last.fm for recent scrobbles.

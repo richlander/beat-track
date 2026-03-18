@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BeatTrack.Core\BeatTrack.Core.csproj" />
+    <ProjectReference Include="..\BeatTrack.LastFm\BeatTrack.LastFm.csproj" />
     <ProjectReference Include="..\BeatTrack.YouTube\BeatTrack.YouTube.csproj" />
     <ProjectReference Include="..\BeatTrack.Discogs\BeatTrack.Discogs.csproj" />
   </ItemGroup>
@@ -9,6 +10,11 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
+    <AssemblyName>beat-track</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\SKILL.md" LogicalName="SKILL.md" />
+  </ItemGroup>
 
 </Project>
