@@ -42,7 +42,6 @@ jobs:
           files: |
             artifacts/beat-track-linux-x64.tar.gz
             artifacts/beat-track-linux-arm64.tar.gz
-            artifacts/beat-track-osx-x64.tar.gz
             artifacts/beat-track-osx-arm64.tar.gz
             artifacts/beat-track-win-x64.zip
             artifacts/beat-track-win-arm64.zip
