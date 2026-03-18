@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: windows-latest
+            rid: win-arm64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: macos-13
+            rid: osx-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
+
+      - name: Build
+        run: dotnet build
+
+      - name: Test
+        run: dotnet test
+
+      - name: Publish AOT
+        run: >
+          dotnet publish src/BeatTrack.App/BeatTrack.App.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained
+          -p:PublishAot=true
+          -o publish
+
+      - name: Smoke test
+        if: "!contains(matrix.rid, 'arm64') || contains(matrix.os, 'arm')"
+        shell: bash
+        run: |
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            ./publish/beat-track.exe status
+          else
+            ./publish/beat-track status
+          fi
+
+      - name: Package (tar.gz)
+        if: "!startsWith(matrix.rid, 'win-')"
+        shell: bash
+        run: tar -czf beat-track-${{ matrix.rid }}.tar.gz -C publish beat-track
+
+      - name: Package (zip)
+        if: startsWith(matrix.rid, 'win-')
+        shell: pwsh
+        run: Compress-Archive -Path publish/beat-track.exe -DestinationPath beat-track-${{ matrix.rid }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: beat-track-${{ matrix.rid }}
+          path: beat-track-${{ matrix.rid }}.*
