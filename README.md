@@ -20,6 +20,16 @@ curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/richlande
 irm https://raw.githubusercontent.com/richlander/beat-track/main/install.ps1 | iex
 ```
 
+## Agent integration
+
+beat-track includes a built-in skill definition for AI agents:
+
+```bash
+beat-track skill
+```
+
+This prints the full agent skill with workflows for establishing the environment, acquiring data, running reports, and managing user preferences. Agents should run this first to understand available commands and data flow.
+
 ## Quick start
 
 ```bash
