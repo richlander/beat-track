@@ -19,11 +19,21 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 - The user wants to play music (BeatTrack is analysis-only, not a player)
 - The user needs real-time music streaming or playback control
 
+## First Use
+
+Before running any commands, find out what the user has available. Ask them:
+
+1. **Do you have a Last.fm account?** If yes, what's your username?
+2. **Do you have a Last.fm API key?** (Get one at https://www.last.fm/api/accounts — it's free and instant.)
+3. **Do you have any other music data?** Discogs collection export, YouTube/Google Takeout, etc.
+
+With just an API key and username, you can immediately run `history` (downloads their full listening history) and `live` (recent scrobbles). No manual file exports needed.
+
 ## Setup
 
 The tool is at `/home/rich/git/beat-track`. All commands run from that directory.
 
-### Check what's available
+### Check what's already configured
 
 ```bash
 dotnet run --project src/BeatTrack.App -- status
@@ -35,24 +45,21 @@ This reports: API keys, data files, cache state, and freshness. Use it to determ
 
 There are four categories of data, each with different setup:
 
-**1. API keys** (config file, one-time setup)
+**1. API keys** (config file, one-time setup — this is the fastest path to a working system)
 Set `lastfm_api_key` and `lastfm_user` in `~/.config/beat-track/config`:
 ```
 lastfm_api_key=YOUR_KEY
 lastfm_user=YOUR_USERNAME
 ```
-Enables: `live`, `snapshot`, and richer full analysis.
+Enables: `live`, `snapshot`, `history`, and richer full analysis. The API key unlocks everything — with it, the tool can fetch the user's complete listening history directly.
 
-**2. Bulk ingestion** (historical data, user-provided)
-One-time imports — the user exports these from external services:
+**2. Bulk ingestion** (optional historical data, user-provided)
+These are supplementary sources — not required if the user has an API key:
 
 | Source | What it provides | Where to place it |
 | --- | --- | --- |
-| Last.fm scrobble CSV | Full listening history with timestamps | `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` |
 | Discogs collection | Physical media ownership | `~/.local/share/beat-track/collection-csv/` |
 | YouTube Takeout | Video listening data | `~/.local/share/beat-track/takeout/extracted/Takeout/` |
-
-The scrobble CSV is the minimum — export from [lastfmstats.com](https://lastfmstats.com).
 
 **3. App-owned steady state** (grows over time, managed by beat-track)
 - **Spoken data**: `my-favorites.md`, `known-misses.md`, `my-similar-artists.md` in DataDir
