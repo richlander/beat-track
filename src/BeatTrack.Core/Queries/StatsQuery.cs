@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 public static class StatsQuery
@@ -83,14 +86,7 @@ public static class StatsQuery
         var daysWithEnough = sortedDailyCounts.Count(c => c >= nextE);
         daysToNext = nextE - daysWithEnough;
 
-        Console.WriteLine("listening_stats:");
-        Console.WriteLine($"  first_scrobble: {firstDate:yyyy-MM-dd} ({timed.First(s => s.TimestampMs == firstTs).ArtistName} - {timed.First(s => s.TimestampMs == firstTs).Track})");
-        Console.WriteLine($"  last_scrobble: {lastDate:yyyy-MM-dd} ({timed.First(s => s.TimestampMs == lastTs).ArtistName} - {timed.First(s => s.TimestampMs == lastTs).Track})");
-        Console.WriteLine($"  total_scrobbles: {timed.Count:N0}");
-        Console.WriteLine($"  unique_artists: {uniqueArtists:N0}");
-        Console.WriteLine($"  unique_albums: {uniqueAlbums:N0}");
-        Console.WriteLine($"  unique_tracks: {uniqueTracks:N0}");
-        Console.WriteLine($"  one_hit_wonders: {oneHitWonders:N0} ({100.0 * oneHitWonders / uniqueArtists:F1}%)");
+        // Listening span breakdown
         var spanYears = lastDate.Year - firstDate.Year;
         var spanMonths = lastDate.Month - firstDate.Month;
         var spanRemainderDays = lastDate.Day - firstDate.Day;
@@ -112,14 +108,29 @@ public static class StatsQuery
         if (spanRemainderDays > 0 || durationParts.Count == 0) durationParts.Add($"{spanRemainderDays}d");
         var duration = string.Join(" ", durationParts);
 
-        Console.WriteLine($"  listening_span: {spanDays:N0} days ({duration})");
-        Console.WriteLine($"  active_days: {activeDays:N0} ({100.0 * activeDays / spanDays:F1}%)");
-        Console.WriteLine($"  avg_per_active_day: {avgPerActiveDay:F1}");
-        Console.WriteLine($"  most_popular_month: {byMonth.Key} ({byMonth.Count():N0} scrobbles)");
-        Console.WriteLine($"  most_popular_year: {byYear.Key} ({byYear.Count():N0} scrobbles)");
-        Console.WriteLine($"  busiest_day_of_week: {byDow.Key} ({byDow.Count():N0} scrobbles)");
-        Console.WriteLine($"  eddington_number: {eddington}");
-        Console.WriteLine($"  days_to_next_eddington: {daysToNext}");
+        var firstScrobble = timed.First(s => s.TimestampMs == firstTs);
+        var lastScrobble = timed.First(s => s.TimestampMs == lastTs);
+
+        var view = new StatsView
+        {
+            FirstScrobble = $"{firstDate:yyyy-MM-dd} ({firstScrobble.ArtistName} - {firstScrobble.Track})",
+            LastScrobble = $"{lastDate:yyyy-MM-dd} ({lastScrobble.ArtistName} - {lastScrobble.Track})",
+            TotalScrobbles = timed.Count,
+            UniqueArtists = uniqueArtists,
+            UniqueAlbums = uniqueAlbums,
+            UniqueTracks = uniqueTracks,
+            OneHitWonders = $"{oneHitWonders:N0} ({100.0 * oneHitWonders / uniqueArtists:F1}%)",
+            ListeningSpan = $"{spanDays:N0} days ({duration})",
+            ActiveDays = $"{activeDays:N0} ({100.0 * activeDays / spanDays:F1}%)",
+            AvgPerActiveDay = avgPerActiveDay,
+            MostPopularMonth = $"{byMonth.Key} ({byMonth.Count():N0} scrobbles)",
+            MostPopularYear = $"{byYear.Key} ({byYear.Count():N0} scrobbles)",
+            BusiestDayOfWeek = $"{byDow.Key} ({byDow.Count():N0} scrobbles)",
+            EddingtonNumber = eddington,
+            DaysToNextEddington = daysToNext,
+        };
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }

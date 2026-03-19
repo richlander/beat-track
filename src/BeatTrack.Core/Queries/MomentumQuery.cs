@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 /// <summary>
@@ -59,26 +62,56 @@ public static class MomentumQuery
                 static g => g.Select(static s => s.Track!.ToLowerInvariant()).Distinct().Count(),
                 StringComparer.OrdinalIgnoreCase);
 
-        // --- Heating up: recent rate >> comparison rate ---
+        var windowLabel = WindowLabel(window);
+
+        // --- Build view model ---
+        var view = new MomentumView
+        {
+            Title = $"Momentum ({window})",
+            Scrobbles = recent.Count,
+            Window = window,
+        };
+
+        // Heating up: recent rate >> comparison rate
         var heatingUp = recentArtists
             .Select(r =>
             {
                 if (!comparisonArtists.TryGetValue(r.Key, out var comp)) return null;
-                var compRate = comp.Count / 3.0; // comparison is 3x the window (excluding recent)
+                var compRate = comp.Count / 3.0;
                 var recentRate = (double)r.Value.Count;
-                // Only "heating up" if they had some prior presence and rate increased
                 if (recentRate <= compRate) return null;
                 var surge = compRate > 0 ? recentRate / compRate : recentRate;
                 depthLookup.TryGetValue(r.Key, out var depth);
-                return new MomentumArtist(r.Value.DisplayName, r.Key, r.Value.Count, comp.Count, surge, depth);
+                if (surge <= 1.5) return null;
+                return new HeatingUpRow
+                {
+                    Name = r.Value.DisplayName,
+                    RecentPlays = r.Value.Count,
+                    Baseline = $"~{comp.Count / 3.0:F0}/wk",
+                    Depth = depth > 15 ? $"{depth} tracks" : depth > 0 ? $"{depth} tracks" : null,
+                };
             })
-            .OfType<MomentumArtist>()
-            .Where(static a => a.Surge > 1.5) // at least 50% above baseline
-            .OrderByDescending(static a => a.Surge)
+            .OfType<HeatingUpRow>()
             .Take(limit)
             .ToList();
 
-        // --- New to you: zero plays before the window ---
+        if (heatingUp.Count > 0) view.HeatingUp = heatingUp;
+
+        // On repeat: tracks played 3+ times in the window
+        var onRepeat = recentTracks
+            .Where(static t => t.Count >= 3)
+            .Take(limit)
+            .Select(t => new OnRepeatRow
+            {
+                Track = t.Track,
+                Artist = t.Artist,
+                Plays = $"{t.Count}x",
+            })
+            .ToList();
+
+        if (onRepeat.Count > 0) view.OnRepeat = onRepeat;
+
+        // New to you: zero plays before the window
         var newToYou = recentArtists
             .Where(r =>
             {
@@ -86,121 +119,84 @@ public static class MomentumQuery
                 var priorPlays = allTime.Count - r.Value.Count;
                 return priorPlays == 0 && r.Value.Count >= 2;
             })
-            .Select(r => new NewArtist(r.Value.DisplayName, r.Value.Count, FindFirstDate(recent, r.Key)))
-            .OrderByDescending(static a => a.Count)
+            .Select(r => new NewToYouRow
+            {
+                Artist = r.Value.DisplayName,
+                Plays = r.Value.Count,
+                FirstListen = FormatDate(FindFirstDate(recent, r.Key)),
+            })
+            .OrderByDescending(static a => a.Plays)
             .Take(limit)
             .ToList();
 
-        // --- Comeback: dormant for 90+ days, now active ---
+        if (newToYou.Count > 0) view.NewToYou = newToYou;
+
+        // Comeback: dormant for 90+ days, now active
         var comebackCutoff = recentCutoff - 90L * 24 * 60 * 60 * 1000;
         var comeback = recentArtists
             .Select(r =>
             {
-                // Find the most recent scrobble before the current window
                 var priorScrobbles = timed
                     .Where(s => s.TimestampMs < recentCutoff &&
                                 BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName)
                                     .Equals(r.Key, StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
-                if (priorScrobbles.Count < 3) return null; // need meaningful prior engagement
-                if (r.Value.Count < 2) return null; // need more than a single accidental play
+                if (priorScrobbles.Count < 3) return null;
+                if (r.Value.Count < 2) return null;
 
                 var lastPriorMs = priorScrobbles.Max(static s => s.TimestampMs);
-                if (lastPriorMs > comebackCutoff) return null; // wasn't dormant
+                if (lastPriorMs > comebackCutoff) return null;
 
                 var gapDays = (int)((recentCutoff - lastPriorMs) / (24.0 * 60 * 60 * 1000));
-                return new ComebackArtist(r.Value.DisplayName, r.Value.Count, priorScrobbles.Count, gapDays);
+                return new ComebackRow
+                {
+                    Artist = r.Value.DisplayName,
+                    RecentPlays = r.Value.Count,
+                    Gap = FormatGap(gapDays),
+                    PriorPlays = priorScrobbles.Count,
+                };
             })
-            .OfType<ComebackArtist>()
-            .OrderByDescending(static a => a.GapDays)
+            .OfType<ComebackRow>()
+            .OrderByDescending(static a => a.Gap)
             .Take(limit)
             .ToList();
 
-        // --- Cooling off: was active in comparison, dropped in recent ---
+        if (comeback.Count > 0) view.Comeback = comeback;
+
+        // Cooling off: was active in comparison, dropped in recent
         var coolingOff = comparisonArtists
             .Select(c =>
             {
                 recentArtists.TryGetValue(c.Key, out var rec);
                 var recentCount = rec?.Count ?? 0;
                 var compRate = c.Value.Count / 3.0;
-                if (compRate < 2) return null; // wasn't meaningfully active
-                if (recentCount >= compRate * 0.5) return null; // hasn't really dropped
-                return new CoolingArtist(c.Value.DisplayName, recentCount, c.Value.Count, compRate);
+                if (compRate < 2) return null;
+                if (recentCount >= compRate * 0.5) return null;
+                return new CoolingOffRow
+                {
+                    Artist = c.Value.DisplayName,
+                    RecentActivity = recentCount == 0 ? "quiet" : $"{recentCount} {Plural(recentCount, "play")}",
+                    Baseline = $"~{compRate:F0}/wk",
+                };
             })
-            .OfType<CoolingArtist>()
-            .OrderByDescending(static a => a.ComparisonRate - a.RecentCount)
+            .OfType<CoolingOffRow>()
             .Take(limit)
             .ToList();
 
-        // --- On repeat: tracks played 3+ times in the window ---
-        var onRepeat = recentTracks
-            .Where(static t => t.Count >= 3)
-            .Take(limit)
-            .ToList();
+        if (coolingOff.Count > 0) view.CoolingOff = coolingOff;
 
-        // --- Output ---
-        Console.WriteLine($"momentum ({window}):");
-        Console.WriteLine();
+        // Build summary line
+        var parts = new List<string>();
+        if (view.HeatingUp is { Count: > 0 }) parts.Add($"{view.HeatingUp.Count} heating up");
+        if (view.OnRepeat is { Count: > 0 }) parts.Add($"{view.OnRepeat.Count} on repeat");
+        if (view.NewToYou is { Count: > 0 }) parts.Add($"{view.NewToYou.Count} new");
+        if (view.Comeback is { Count: > 0 }) parts.Add($"{view.Comeback.Count} comeback");
+        if (view.CoolingOff is { Count: > 0 }) parts.Add($"{view.CoolingOff.Count} cooling off");
+        view.Summary = parts.Count > 0 ? string.Join(" | ", parts) : "Steady state — no significant momentum shifts detected.";
 
-        if (heatingUp.Count > 0)
-        {
-            Console.WriteLine("  heating up:");
-            foreach (var a in heatingUp)
-            {
-                var depthNote = a.Depth > 15 ? $"deep catalog ({a.Depth} tracks)" : a.Depth > 0 ? $"{a.Depth} tracks explored" : "";
-                var surgeNote = $"{a.RecentCount} plays this {WindowLabel(window)}, was ~{a.ComparisonCount / 3.0:F0}/wk";
-                Console.WriteLine($"    {a.DisplayName} — {surgeNote}. {depthNote}".TrimEnd());
-            }
-            Console.WriteLine();
-        }
-
-        if (onRepeat.Count > 0)
-        {
-            Console.WriteLine("  on repeat:");
-            foreach (var t in onRepeat)
-            {
-                Console.WriteLine($"    \"{t.Track}\" by {t.Artist} — {t.Count}x this {WindowLabel(window)}");
-            }
-            Console.WriteLine();
-        }
-
-        if (newToYou.Count > 0)
-        {
-            Console.WriteLine("  new to you:");
-            foreach (var a in newToYou)
-            {
-                Console.WriteLine($"    {a.DisplayName} — {a.Count} plays, first listen {FormatDate(a.FirstScrobbleMs)}");
-            }
-            Console.WriteLine();
-        }
-
-        if (comeback.Count > 0)
-        {
-            Console.WriteLine("  comeback:");
-            foreach (var a in comeback)
-            {
-                Console.WriteLine($"    {a.DisplayName} — {a.RecentCount} {Plural(a.RecentCount, "play")}, back after {FormatGap(a.GapDays)}. {a.PriorPlays} {Plural(a.PriorPlays, "play")} before that.");
-            }
-            Console.WriteLine();
-        }
-
-        if (coolingOff.Count > 0)
-        {
-            Console.WriteLine("  cooling off:");
-            foreach (var a in coolingOff)
-            {
-                var recentNote = a.RecentCount == 0 ? "quiet" : $"{a.RecentCount} {Plural(a.RecentCount, "play")}";
-                Console.WriteLine($"    {a.DisplayName} — {recentNote} this {WindowLabel(window)}, was ~{a.ComparisonRate:F0}/wk");
-            }
-            Console.WriteLine();
-        }
-
-        if (heatingUp.Count == 0 && onRepeat.Count == 0 && newToYou.Count == 0 && comeback.Count == 0 && coolingOff.Count == 0)
-        {
-            Console.WriteLine("  steady state — no significant momentum shifts detected.");
-            Console.WriteLine();
-        }
+        // Serialize
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }
@@ -278,8 +274,4 @@ public static class MomentumQuery
 
     private sealed record ArtistAggregate(string DisplayName, int Count);
     private sealed record TrackCount(string Artist, string Track, int Count);
-    private sealed record MomentumArtist(string DisplayName, string Canonical, int RecentCount, int ComparisonCount, double Surge, int Depth);
-    private sealed record NewArtist(string DisplayName, int Count, long FirstScrobbleMs);
-    private sealed record ComebackArtist(string DisplayName, int RecentCount, int PriorPlays, int GapDays);
-    private sealed record CoolingArtist(string DisplayName, int RecentCount, int ComparisonCount, double ComparisonRate);
 }

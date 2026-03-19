@@ -1,6 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\BeatTrack.Core\BeatTrack.Core.csproj" />
     <ProjectReference Include="..\BeatTrack.LastFm\BeatTrack.LastFm.csproj" />
     <ProjectReference Include="..\BeatTrack.YouTube\BeatTrack.YouTube.csproj" />

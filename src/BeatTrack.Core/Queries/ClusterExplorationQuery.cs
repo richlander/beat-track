@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 /// <summary>
@@ -21,7 +24,7 @@ public static class ClusterExplorationQuery
 
         if (!File.Exists(mbidCachePath) || !Directory.Exists(similarCacheDir))
         {
-            Console.WriteLine("(no caches found — run the full analysis first to populate MBID and similar artist caches)");
+            Console.Error.WriteLine("(no caches found — run the full analysis first to populate MBID and similar artist caches)");
             return 1;
         }
 
@@ -48,14 +51,14 @@ public static class ClusterExplorationQuery
             var mbid = mbidCache.GetMbid(canonical);
             if (mbid is null)
             {
-                Console.WriteLine($"(no MBID cached for '{artistName}' — run full analysis to populate)");
+                Console.Error.WriteLine($"(no MBID cached for '{artistName}' — run full analysis to populate)");
                 return 1;
             }
 
             var cacheFile = Path.Combine(similarCacheDir, $"{mbid}.md");
             if (!File.Exists(cacheFile))
             {
-                Console.WriteLine($"(no similar artists cached for '{artistName}' — run full analysis to populate)");
+                Console.Error.WriteLine($"(no similar artists cached for '{artistName}' — run full analysis to populate)");
                 return 1;
             }
 
@@ -82,7 +85,7 @@ public static class ClusterExplorationQuery
 
         if (seeds.Count == 0)
         {
-            Console.WriteLine("(no artists with cached similar artist data found)");
+            Console.Error.WriteLine("(no artists with cached similar artist data found)");
             return 0;
         }
 
@@ -125,8 +128,8 @@ public static class ClusterExplorationQuery
                 var simCanonical = BeatTrackAnalysis.CanonicalizeArtistName(s.Name);
                 if (listenedCanonical.Contains(simCanonical))
                 {
-                    var p = artistPlays.TryGetValue(simCanonical, out var ap) ? ap.Count : 0;
-                    explored.Add((s.Name, s.Score, p));
+                    var ap = artistPlays.TryGetValue(simCanonical, out var apVal) ? apVal.Count : 0;
+                    explored.Add((s.Name, s.Score, ap));
                 }
                 else
                 {
@@ -148,7 +151,7 @@ public static class ClusterExplorationQuery
 
         if (results.Count == 0)
         {
-            Console.WriteLine("(no cluster data available)");
+            Console.Error.WriteLine("(no cluster data available)");
             return 0;
         }
 
@@ -157,43 +160,65 @@ public static class ClusterExplorationQuery
 
         var singleArtist = artistName is not null;
 
-        Console.WriteLine($"cluster_exploration ({results.Count} artists, min_score={minScore}):");
-        Console.WriteLine();
+        var view = new ClusterExplorationView
+        {
+            Artists = results.Count,
+            MinScore = minScore,
+        };
+
+        var clusterRows = new List<ClusterRow>();
 
         foreach (var r in results)
         {
-            Console.WriteLine($"  {r.Name}  ({r.Plays:N0} plays, {r.ExploredCount}/{r.TotalSimilar} explored, {r.ExploredPct:F0}%)");
+            var topUnexplored = singleArtist
+                ? null
+                : r.Unexplored.Count > 0
+                    ? string.Join(", ", r.Unexplored.Take(5).Select(static u => u.Name))
+                    : null;
 
-            if (singleArtist || r.Unexplored.Count > 0)
+            clusterRows.Add(new ClusterRow
             {
-                // Show top unexplored (the actionable part)
-                var showUnexplored = singleArtist ? r.Unexplored : r.Unexplored.Take(5).ToList();
-                if (showUnexplored.Count > 0)
-                {
-                    Console.WriteLine("    unexplored:");
-                    foreach (var (name, score) in showUnexplored)
-                    {
-                        Console.WriteLine($"      {name}  (similarity: {score})");
-                    }
-
-                    if (!singleArtist && r.Unexplored.Count > 5)
-                    {
-                        Console.WriteLine($"      ... and {r.Unexplored.Count - 5} more");
-                    }
-                }
-            }
-
-            if (singleArtist && r.Explored.Count > 0)
-            {
-                Console.WriteLine("    explored:");
-                foreach (var (name, score, plays) in r.Explored)
-                {
-                    Console.WriteLine($"      {name}  ({plays:N0} plays, similarity: {score})");
-                }
-            }
-
-            Console.WriteLine();
+                Artist = r.Name,
+                Plays = r.Plays,
+                ExploredLabel = $"{r.ExploredCount}/{r.TotalSimilar}",
+                Coverage = $"{r.ExploredPct:F0}%",
+                TopUnexplored = topUnexplored,
+            });
         }
+
+        if (clusterRows.Count > 0)
+            view.Clusters = clusterRows;
+
+        // Single-artist mode: add detail sections
+        if (singleArtist && results.Count == 1)
+        {
+            var r = results[0];
+
+            if (r.Unexplored.Count > 0)
+            {
+                view.Unexplored = r.Unexplored
+                    .Select(static u => new UnexploredRow
+                    {
+                        Artist = u.Name,
+                        Similarity = u.Score,
+                    })
+                    .ToList();
+            }
+
+            if (r.Explored.Count > 0)
+            {
+                view.Explored = r.Explored
+                    .Select(static e => new ExploredRow
+                    {
+                        Artist = e.Name,
+                        Plays = e.Plays,
+                        Similarity = e.Score,
+                    })
+                    .ToList();
+            }
+        }
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }

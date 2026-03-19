@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 public static class StreaksQuery
@@ -32,27 +35,17 @@ public static class StreaksQuery
             currentStreak = null;
         }
 
-        Console.WriteLine("overall_streaks:");
         var longest = overallStreaks.OrderByDescending(static s => s.Days).FirstOrDefault();
-        if (longest is not null)
-        {
-            Console.WriteLine($"  longest: {longest.Days} days ({longest.Start} to {longest.End})");
-        }
 
-        if (currentStreak is not null)
+        var view = new StreaksView
         {
-            Console.WriteLine($"  current: {currentStreak.Days} days ({currentStreak.Start} to {currentStreak.End})");
-        }
-        else
-        {
-            Console.WriteLine("  current: 0 (not scrobbling today)");
-        }
-
-        Console.WriteLine($"  top_streaks:");
-        foreach (var streak in overallStreaks.OrderByDescending(static s => s.Days).Take(10))
-        {
-            Console.WriteLine($"    {streak.Days} days: {streak.Start} to {streak.End}");
-        }
+            Longest = longest is not null
+                ? $"{longest.Days} days ({longest.Start} to {longest.End})"
+                : "0",
+            Current = currentStreak is not null
+                ? $"{currentStreak.Days} days ({currentStreak.Start} to {currentStreak.End})"
+                : "0 (not scrobbling today)",
+        };
 
         // Per-artist streaks
         if (targetArtist is not null)
@@ -65,25 +58,36 @@ public static class StreaksQuery
                 .Order()
                 .ToList();
 
-            Console.WriteLine();
-            Console.WriteLine($"streaks for \"{targetArtist}\" ({artistDates.Count} active days):");
             var artistStreaks = FindStreaks(artistDates);
-            foreach (var streak in artistStreaks.Where(s => s.Days >= minDays).OrderByDescending(static s => s.Days))
-            {
-                Console.WriteLine($"  {streak.Days} days: {streak.Start} to {streak.End}");
-            }
+            var filtered = artistStreaks
+                .Where(s => s.Days >= minDays)
+                .OrderByDescending(static s => s.Days)
+                .Select(s => new StreakRow
+                {
+                    Days = s.Days,
+                    Start = s.Start.ToString("yyyy-MM-dd"),
+                    End = s.End.ToString("yyyy-MM-dd"),
+                })
+                .ToList();
 
-            if (!artistStreaks.Any(s => s.Days >= minDays))
-            {
-                Console.WriteLine($"  (no streaks >= {minDays} days)");
-            }
+            view.Title = $"Streaks: {targetArtist}";
+            view.TopStreaks = filtered.Count > 0 ? filtered : null;
         }
         else
         {
-            // Top artist streaks
-            Console.WriteLine();
-            Console.WriteLine($"artist_streaks (top {topCount} by longest streak, min {minDays}d):");
+            // Top overall streaks
+            view.TopStreaks = overallStreaks
+                .OrderByDescending(static s => s.Days)
+                .Take(10)
+                .Select(s => new StreakRow
+                {
+                    Days = s.Days,
+                    Start = s.Start.ToString("yyyy-MM-dd"),
+                    End = s.End.ToString("yyyy-MM-dd"),
+                })
+                .ToList();
 
+            // Top artist streaks
             var artistStreakResults = timed
                 .GroupBy(s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName), StringComparer.OrdinalIgnoreCase)
                 .Select(g =>
@@ -103,11 +107,19 @@ public static class StreaksQuery
                 .Take(topCount)
                 .ToList();
 
-            foreach (var result in artistStreakResults)
-            {
-                Console.WriteLine($"  {result.OriginalName}: {result.LongestStreak!.Days} days ({result.LongestStreak.Start} to {result.LongestStreak.End}), {result.TotalPlays:N0} total plays");
-            }
+            view.ArtistStreaks = artistStreakResults
+                .Select(r => new ArtistStreakRow
+                {
+                    Artist = r.OriginalName,
+                    Days = r.LongestStreak!.Days,
+                    Start = r.LongestStreak.Start.ToString("yyyy-MM-dd"),
+                    End = r.LongestStreak.End.ToString("yyyy-MM-dd"),
+                    TotalPlays = r.TotalPlays,
+                })
+                .ToList();
         }
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }

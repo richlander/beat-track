@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 public static class ArtistVelocityQuery
@@ -64,7 +67,7 @@ public static class ArtistVelocityQuery
         // Get all unique periods sorted
         var allPeriods = filtered.Select(static x => x.Period).Distinct().Order().ToList();
 
-        // Build cumulative counts per artist per period
+        // Build per-period counts per artist
         var counts = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
         foreach (var canonical in targetCanonical)
         {
@@ -93,46 +96,37 @@ public static class ArtistVelocityQuery
             cumulative[canonical] = cum;
         }
 
-        // Output as table
-        var nameWidth = targetCanonical.Max(c => (displayNames.GetValueOrDefault(c, c)).Length);
-        nameWidth = Math.Max(nameWidth, 8);
-
-        Console.WriteLine($"artist_velocity ({bucket}, {targetCanonical.Count} artists):");
-        Console.WriteLine();
-
-        // Header
-        Console.Write($"  {"period",-10}");
-        foreach (var canonical in targetCanonical)
-        {
-            var name = displayNames.GetValueOrDefault(canonical, canonical);
-            if (name.Length > 20) name = name[..17] + "...";
-            Console.Write($" | {name,20}");
-        }
-        Console.WriteLine();
-
-        Console.Write($"  {"----------",-10}");
-        foreach (var _ in targetCanonical)
-        {
-            Console.Write($" | {"--------------------",20}");
-        }
-        Console.WriteLine();
-
-        // Data rows — skip periods where no target artist has any cumulative plays
+        // Build flattened rows: one row per artist per period where cumulative > 0
+        var rows = new List<VelocityRow>();
         foreach (var period in allPeriods)
         {
-            if (!targetCanonical.Any(c => cumulative[c].GetValueOrDefault(period) > 0))
-            {
-                continue;
-            }
-
-            Console.Write($"  {period,-10}");
             foreach (var canonical in targetCanonical)
             {
-                var value = cumulative[canonical].GetValueOrDefault(period);
-                Console.Write($" | {value,20:N0}");
+                var cum = cumulative[canonical].GetValueOrDefault(period);
+                if (cum <= 0) continue;
+
+                var periodPlays = counts[canonical].GetValueOrDefault(period);
+                var displayName = displayNames.GetValueOrDefault(canonical, canonical);
+
+                rows.Add(new VelocityRow
+                {
+                    Period = period,
+                    Artist = displayName,
+                    Cumulative = cum,
+                    PeriodPlays = periodPlays,
+                });
             }
-            Console.WriteLine();
         }
+
+        var view = new ArtistVelocityView
+        {
+            Title = $"Artist Velocity ({bucket}, {targetCanonical.Count} artists)",
+            Bucket = bucket,
+            Artists = targetCanonical.Count,
+            Rows = rows,
+        };
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }
