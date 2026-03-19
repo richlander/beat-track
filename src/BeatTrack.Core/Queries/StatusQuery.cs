@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 /// <summary>
@@ -9,105 +12,96 @@ public static class StatusQuery
 {
     public static int Run(string dataDir, string cacheDir, string configFile, string[] searchDirs)
     {
-        Console.WriteLine("beat-track status");
-        Console.WriteLine();
+        var view = new StatusView();
 
         // Config
         var config = new BeatTrackConfig(configFile);
-        Console.WriteLine("config:");
-        Console.WriteLine($"  file: {configFile}{(File.Exists(configFile) ? "" : " (not found)")}");
-        Console.WriteLine($"  lastfm_api_key: {(config.LastFmApiKey is not null ? "set" : "not set")}");
-        Console.WriteLine($"  lastfm_user: {config.LastFmUser ?? "(not set)"}");
-        Console.WriteLine();
+        view.Config =
+        [
+            new() { Name = "config_file", Value = $"{configFile}{(File.Exists(configFile) ? "" : " (not found)")}" },
+            new() { Name = "lastfm_api_key", Value = config.LastFmApiKey is not null ? "set" : "not set" },
+            new() { Name = "lastfm_user", Value = config.LastFmUser ?? "(not set)" },
+        ];
 
         // Directories
-        Console.WriteLine("directories:");
-        Console.WriteLine($"  data: {dataDir}{(Directory.Exists(dataDir) ? "" : " (not created)")}");
-        Console.WriteLine($"  cache: {cacheDir}{(Directory.Exists(cacheDir) ? "" : " (not created)")}");
-        Console.WriteLine();
+        view.Directories =
+        [
+            new() { Name = "data_dir", Value = $"{dataDir}{(Directory.Exists(dataDir) ? "" : " (not created)")}" },
+            new() { Name = "cache_dir", Value = $"{cacheDir}{(Directory.Exists(cacheDir) ? "" : " (not created)")}" },
+            new() { Name = "search_dirs", Value = string.Join(", ", searchDirs) },
+        ];
 
         // Data sources
-        Console.WriteLine("data_sources:");
+        var dataSources = new List<StatusItemRow>();
 
-        // Scrobble CSV
         var scrobbleCsv = FindFile("lastfmstats-*.csv", searchDirs.Select(d => Path.Combine(d, "lastfmstats")).ToArray());
-        PrintSource("  lastfm_scrobbles", scrobbleCsv);
+        dataSources.Add(new() { Name = "lastfm_scrobbles", Value = FormatSource(scrobbleCsv) });
 
-        // Snapshot
         var snapshot = FindFile("*-snapshot.json", searchDirs);
-        PrintSource("  lastfm_snapshot", snapshot);
+        dataSources.Add(new() { Name = "lastfm_snapshot", Value = FormatSource(snapshot) });
 
-        // Discogs
         var discogs = FindFile("*-collection-*.csv", searchDirs.Select(d => Path.Combine(d, "collection-csv")).ToArray());
-        PrintSource("  discogs_collection", discogs);
+        dataSources.Add(new() { Name = "discogs_collection", Value = FormatSource(discogs) });
 
-        // YouTube takeout
         var takeoutDirs = searchDirs.Select(d => Path.Combine(d, "takeout", "extracted", "Takeout", "YouTube and YouTube Music", "history")).ToArray();
         var youtube = FindFile("watch-history.html", takeoutDirs);
-        PrintSource("  youtube_takeout", youtube);
+        dataSources.Add(new() { Name = "youtube_takeout", Value = FormatSource(youtube) });
 
-        // Known misses
         var misses = FindExact(Path.Combine(dataDir, "known-misses.md"));
-        PrintSource("  known_misses", misses);
+        dataSources.Add(new() { Name = "known_misses", Value = FormatSource(misses) });
 
-        // User-defined data
         var favorites = FindExact(Path.Combine(dataDir, "my-favorites.md"));
-        PrintSource("  my_favorites", favorites);
+        dataSources.Add(new() { Name = "my_favorites", Value = FormatSource(favorites) });
 
         var userSimilar = FindExact(Path.Combine(dataDir, "my-similar-artists.md"));
-        PrintSource("  my_similar_artists", userSimilar);
+        dataSources.Add(new() { Name = "my_similar_artists", Value = FormatSource(userSimilar) });
 
-        Console.WriteLine();
+        view.DataSources = dataSources;
 
         // Cache
-        Console.WriteLine("cache:");
+        var cacheItems = new List<StatusItemRow>();
+
         var mbidCache = FindExact(Path.Combine(cacheDir, "mbid-cache.md"));
-        PrintSource("  mbid_cache", mbidCache);
+        cacheItems.Add(new() { Name = "mbid_cache", Value = FormatSource(mbidCache) });
 
         var similarDir = Path.Combine(cacheDir, "similar-artists");
         if (Directory.Exists(similarDir))
         {
             var count = Directory.EnumerateFiles(similarDir, "*.md").Count();
-            Console.WriteLine($"  similar_artists: {count} cached");
+            cacheItems.Add(new() { Name = "similar_artists", Value = $"{count} cached" });
         }
         else
         {
-            Console.WriteLine("  similar_artists: (none)");
+            cacheItems.Add(new() { Name = "similar_artists", Value = "(none)" });
         }
 
-        Console.WriteLine();
+        view.Cache = cacheItems;
 
         // Suggestions
-        var suggestions = new List<string>();
+        var suggestions = new List<SuggestionRow>();
         if (scrobbleCsv is null)
-            suggestions.Add("Export scrobble history from lastfmstats.com and place in " + Path.Combine(dataDir, "lastfmstats") + "/");
+            suggestions.Add(new() { Action = "Export scrobble history from lastfmstats.com and place in " + Path.Combine(dataDir, "lastfmstats") + "/" });
         if (config.LastFmApiKey is null && Environment.GetEnvironmentVariable("LASTFM_API_KEY") is null)
-            suggestions.Add($"Add lastfm_api_key to {configFile} for snapshot fetching and live feed");
+            suggestions.Add(new() { Action = $"Add lastfm_api_key to {configFile} for snapshot fetching and live feed" });
         if (scrobbleCsv is not null && snapshot is null && (config.LastFmApiKey is not null || Environment.GetEnvironmentVariable("LASTFM_API_KEY") is not null))
-            suggestions.Add("Run the Last.fm snapshot tool to enable full analysis with MBIDs");
+            suggestions.Add(new() { Action = "Run the Last.fm snapshot tool to enable full analysis with MBIDs" });
         if (scrobbleCsv is not null)
         {
             var age = DateTime.Now - File.GetLastWriteTime(scrobbleCsv);
             if (age.TotalDays > 30)
-                suggestions.Add($"Scrobble CSV is {(int)age.TotalDays} days old — consider re-exporting from lastfmstats.com");
+                suggestions.Add(new() { Action = $"Scrobble CSV is {(int)age.TotalDays} days old — consider re-exporting from lastfmstats.com" });
         }
         if (snapshot is not null)
         {
             var age = DateTime.Now - File.GetLastWriteTime(snapshot);
             if (age.TotalDays > 14)
-                suggestions.Add($"Snapshot is {(int)age.TotalDays} days old — consider re-fetching");
+                suggestions.Add(new() { Action = $"Snapshot is {(int)age.TotalDays} days old — consider re-fetching" });
         }
 
         if (suggestions.Count > 0)
-        {
-            Console.WriteLine("suggestions:");
-            foreach (var s in suggestions)
-                Console.WriteLine($"  - {s}");
-        }
-        else
-        {
-            Console.WriteLine("all data sources present");
-        }
+            view.Suggestions = suggestions;
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }
@@ -125,13 +119,10 @@ public static class StatusQuery
 
     private static string? FindExact(string path) => File.Exists(path) ? path : null;
 
-    private static void PrintSource(string label, string? path)
+    private static string FormatSource(string? path)
     {
         if (path is null)
-        {
-            Console.WriteLine($"{label}: (not found)");
-            return;
-        }
+            return "(not found)";
 
         var info = new FileInfo(path);
         var age = DateTime.Now - info.LastWriteTime;
@@ -151,6 +142,6 @@ public static class StatusQuery
             _ => $"{info.Length / (1024.0 * 1024.0):F1} MB"
         };
 
-        Console.WriteLine($"{label}: {Path.GetFileName(path)} ({sizeStr}, {ageStr})");
+        return $"{Path.GetFileName(path)} ({sizeStr}, {ageStr})";
     }
 }

@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 /// <summary>
@@ -49,21 +52,27 @@ public static class DurationQuery
             .Distinct()
             .Count();
 
-        Console.WriteLine("listening_duration:");
-        Console.WriteLine($"  from: {firstDate:yyyy-MM-dd}");
-        Console.WriteLine($"  to: {lastDate:yyyy-MM-dd}");
-        Console.WriteLine($"  span: {duration} ({spanDays:N0} days)");
-        Console.WriteLine($"  active_days: {activeDays:N0} ({100.0 * activeDays / spanDays:F1}%)");
-        Console.WriteLine();
-        Console.WriteLine("  windows_as_percentage:");
-
         // Show what common windows represent
         int[] windowDays = [7, 30, 90, 365];
-        foreach (var w in windowDays)
+        var windows = windowDays
+            .TakeWhile(w => w < spanDays)
+            .Select(w => new WindowPercentageRow
+            {
+                Window = $"{w}d",
+                Percentage = $"{100.0 * w / spanDays:F1}%",
+            })
+            .ToList();
+
+        var view = new DurationView
         {
-            if (w >= spanDays) break;
-            Console.WriteLine($"    {w}d: {100.0 * w / spanDays:F1}% of history");
-        }
+            From = $"{firstDate:yyyy-MM-dd}",
+            To = $"{lastDate:yyyy-MM-dd}",
+            Span = $"{duration} ({spanDays:N0} days)",
+            ActiveDays = $"{activeDays:N0} ({100.0 * activeDays / spanDays:F1}%)",
+            Windows = windows.Count > 0 ? windows : null,
+        };
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }

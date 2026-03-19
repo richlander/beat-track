@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using BeatTrack.Core.Views;
+using Markout;
 
 namespace BeatTrack.Core.Queries;
 
@@ -100,24 +102,34 @@ public static partial class ArtistDepthQuery
             _ => "deep cuts — catalog explorers",
         };
 
-        Console.WriteLine($"artist_depth ({window}, min {minPlays} plays, {label}):");
-        Console.WriteLine();
-        Console.WriteLine($"  {"Artist",-30} {"Plays",6} {"Tracks",7} {"Albums",7} {"Months",7} {"Top%",5}  Top track");
-        Console.WriteLine($"  {"------------------------------",-30} {"------",6} {"-------",7} {"-------",7} {"-------",7} {"-----",5}  ---------");
-
-        foreach (var a in sorted.Take(limit))
+        // --- Build view model ---
+        var view = new ArtistDepthView
         {
-            var topTrack = a.TopTrackName ?? "";
-            if (topTrack.Length > 30) topTrack = topTrack[..27] + "...";
-            Console.WriteLine($"  {Truncate(a.DisplayName, 30),-30} {a.Plays,6:N0} {a.UniqueTracks,7} {a.Albums,7} {a.Periods,7} {a.TopTrackShare,5:P0}  {topTrack}");
-        }
+            Title = $"Artist Depth ({window}, min {minPlays}, {label})",
+            Window = window,
+            Mode = mode,
+        };
+
+        // Main artist table
+        var artistRows = sorted.Take(limit)
+            .Select(a => new ArtistDepthRow
+            {
+                Artist = a.DisplayName,
+                Plays = a.Plays,
+                Tracks = a.UniqueTracks,
+                Albums = a.Albums,
+                Months = a.Periods,
+                TopTrackShare = a.TopTrackShare,
+                TopTrack = a.TopTrackName,
+            })
+            .ToList();
+
+        if (artistRows.Count > 0) view.Artists = artistRows;
 
         // In shallow mode, generate recommendations
         if (mode.Equals("shallow", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine();
-            Console.WriteLine("recommendations:");
-            Console.WriteLine();
+            var recommendations = new List<DepthRecommendationRow>();
 
             foreach (var a in sorted.Take(limit))
             {
@@ -135,23 +147,40 @@ public static partial class ArtistDepthQuery
 
                     if (detectedPlays >= minPlays)
                     {
-                        // You already love the detected artist — recommend the covering/remixing artist instead
-                        Console.WriteLine($"  {a.DisplayName} — {relationKind} of {detectedArtist} ({detectedPlays:N0} plays) → explore {a.DisplayName}'s original work");
+                        recommendations.Add(new DepthRecommendationRow
+                        {
+                            Artist = a.DisplayName,
+                            Recommendation = $"{relationKind} of {detectedArtist} ({detectedPlays:N0} plays) — explore {a.DisplayName}'s original work",
+                        });
                     }
                     else if (detectedPlays > 0)
                     {
-                        Console.WriteLine($"  {a.DisplayName} — \"{Truncate(a.TopTrackName, 40)}\" is a {relationKind} → explore more of {detectedArtist}");
+                        recommendations.Add(new DepthRecommendationRow
+                        {
+                            Artist = a.DisplayName,
+                            Recommendation = $"\"{Truncate(a.TopTrackName, 40)}\" is a {relationKind} — explore more of {detectedArtist}",
+                        });
                     }
                     else
                     {
-                        Console.WriteLine($"  {a.DisplayName} — \"{Truncate(a.TopTrackName, 40)}\" is a {relationKind} → check out {detectedArtist}");
+                        recommendations.Add(new DepthRecommendationRow
+                        {
+                            Artist = a.DisplayName,
+                            Recommendation = $"\"{Truncate(a.TopTrackName, 40)}\" is a {relationKind} — check out {detectedArtist}",
+                        });
                     }
                 }
                 else if (a.UniqueTracks <= 2 && a.TopTrackShare >= 0.5)
                 {
-                    Console.WriteLine($"  {a.DisplayName} — you love \"{Truncate(a.TopTrackName, 40)}\" → explore their catalog");
+                    recommendations.Add(new DepthRecommendationRow
+                    {
+                        Artist = a.DisplayName,
+                        Recommendation = $"you love \"{Truncate(a.TopTrackName, 40)}\" — explore their catalog",
+                    });
                 }
             }
+
+            if (recommendations.Count > 0) view.Recommendations = recommendations;
         }
 
         // In deep mode, highlight the strongest artist relationships
@@ -162,42 +191,58 @@ public static partial class ArtistDepthQuery
             var minTracks = Math.Max(5, Math.Min(20, windowMonths));
             var minPeriods = Math.Max(2, Math.Min(6, windowMonths / 2));
 
-            Console.WriteLine();
-            Console.WriteLine($"true_love_artists ({window}, min {minTracks} tracks, {minPeriods}+ months, <15% top track):");
-            Console.WriteLine();
-
             var trueLove = artists
                 .Where(a => a.UniqueTracks >= minTracks && a.Periods >= minPeriods && a.TopTrackShare < 0.15)
                 .OrderByDescending(static a => a.UniqueTracks * a.Periods)
                 .Take(20)
+                .Select(a => new TrueLoveRow
+                {
+                    Artist = a.DisplayName,
+                    Tracks = a.UniqueTracks,
+                    Albums = a.Albums,
+                    Months = a.Periods,
+                    TopTrackShare = a.TopTrackShare,
+                })
                 .ToList();
 
-            foreach (var a in trueLove)
-            {
-                Console.WriteLine($"  {a.DisplayName}  ({a.UniqueTracks} tracks, {a.Albums} albums, {a.Periods} months, top track only {a.TopTrackShare:P0})");
-            }
-
-            Console.WriteLine();
-            Console.WriteLine("Use these as seeds for similar-artist recommendations — they represent deep taste, not passing interest.");
+            if (trueLove.Count > 0) view.TrueLoveArtists = trueLove;
 
             // Fan tiers by quarter consistency
-            Console.WriteLine();
-            Console.WriteLine($"fan_tiers ({window}, {totalQuarters} quarters):");
-
             var staples = artists.Where(static a => a.FanRatio >= 0.75)
-                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters).ToList();
-            var regulars = artists.Where(static a => a.FanRatio >= 0.50 && a.FanRatio < 0.75)
-                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters).ToList();
-            var rotation = artists.Where(static a => a.FanRatio >= 0.25 && a.FanRatio < 0.50)
-                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters).ToList();
+                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters)
+                .Take(20)
+                .Select(a => ToFanTierRow(a, totalQuarters))
+                .ToList();
 
-            PrintFanTier("staple", ">=75% of quarters — always in rotation", staples, totalQuarters);
-            PrintFanTier("regular", ">=50% of quarters — shows up more than not", regulars, totalQuarters);
-            PrintFanTier("rotation", ">=25% of quarters — cycles in and out", rotation, totalQuarters);
+            var regulars = artists.Where(static a => a.FanRatio >= 0.50 && a.FanRatio < 0.75)
+                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters)
+                .Take(20)
+                .Select(a => ToFanTierRow(a, totalQuarters))
+                .ToList();
+
+            var rotation = artists.Where(static a => a.FanRatio >= 0.25 && a.FanRatio < 0.50)
+                .OrderByDescending(static a => a.FanRatio).ThenByDescending(static a => a.Quarters)
+                .Take(20)
+                .Select(a => ToFanTierRow(a, totalQuarters))
+                .ToList();
+
+            if (staples.Count > 0) view.Staples = staples;
+            if (regulars.Count > 0) view.Regulars = regulars;
+            if (rotation.Count > 0) view.Rotation = rotation;
         }
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }
+
+    private static FanTierRow ToFanTierRow(ArtistDepth a, int totalQuarters) => new()
+    {
+        Artist = a.DisplayName,
+        QuarterLabel = $"{a.Quarters}/{totalQuarters}",
+        Coverage = a.FanRatio,
+        Plays = a.Plays,
+    };
 
     /// <summary>
     /// Detects if a track name indicates a cover and extracts the original artist.
@@ -247,27 +292,6 @@ public static partial class ArtistDepthQuery
 
     [GeneratedRegex(@"\((.+?)\s+(?:[Rr]emix|[Mm]ix|[Ee]dit)\)", RegexOptions.Compiled)]
     private static partial Regex RemixPattern();
-
-    private static void PrintFanTier(string tierName, string description, List<ArtistDepth> artists, int totalQuarters)
-    {
-        Console.WriteLine();
-        Console.WriteLine($"  {tierName} ({description}):");
-        if (artists.Count == 0)
-        {
-            Console.WriteLine("    (none)");
-            return;
-        }
-
-        foreach (var a in artists.Take(20))
-        {
-            Console.WriteLine($"    {a.DisplayName}  ({a.Quarters}/{totalQuarters} quarters = {a.FanRatio:P0}, {a.Plays:N0} plays)");
-        }
-
-        if (artists.Count > 20)
-        {
-            Console.WriteLine($"    ... and {artists.Count - 20} more");
-        }
-    }
 
     private static int GetTotalQuarters(IReadOnlyList<LastFmScrobble> scrobbles)
     {

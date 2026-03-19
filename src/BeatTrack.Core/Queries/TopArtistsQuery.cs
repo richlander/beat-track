@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 public static class TopArtistsQuery
@@ -14,7 +17,7 @@ public static class TopArtistsQuery
 
         if (filtered.Count == 0)
         {
-            Console.WriteLine($"(no scrobbles found in {window} window)");
+            Console.Error.WriteLine($"(no scrobbles found in {window} window)");
             return 0;
         }
 
@@ -25,32 +28,24 @@ public static class TopArtistsQuery
             .Take(limit)
             .ToList();
 
-        var maxCount = ranked[0].Count;
-
-        Console.WriteLine($"top_artists ({window}, {filtered.Count:N0} scrobbles):");
-        Console.WriteLine();
-
-        foreach (var (name, _, count) in ranked)
+        var view = new TopArtistsView
         {
-            var tier = GetTier(count, maxCount);
-            var bar = new string('█', Math.Max(1, (int)(30.0 * count / maxCount)));
-            Console.WriteLine($"  {bar} {name} ({count:N0})");
-        }
+            Title = $"Top Artists ({window})",
+            Summary = $"{filtered.Count:N0} scrobbles",
+            Scrobbles = filtered.Count,
+            Window = window,
+            Artists = ranked
+                .Select(x => new TopArtistRow
+                {
+                    Name = x.Name,
+                    Plays = x.Count,
+                })
+                .ToList(),
+        };
+
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
-    }
-
-    private static int GetTier(int count, int maxCount)
-    {
-        var ratio = (double)count / maxCount;
-        return ratio switch
-        {
-            >= 0.6 => 5,
-            >= 0.3 => 4,
-            >= 0.15 => 3,
-            >= 0.05 => 2,
-            _ => 1,
-        };
     }
 
     internal static long ParseWindowCutoff(string window)

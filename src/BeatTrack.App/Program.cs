@@ -1,3 +1,4 @@
+using System.CommandLine;
 using System.Text.Json;
 using BeatTrack.App;
 using BeatTrack.Core;
@@ -6,799 +7,642 @@ using BeatTrack.Discogs;
 using BeatTrack.LastFm;
 using BeatTrack.YouTube;
 
-// --- API commands: require Last.fm API key, no local data needed ---
-if (args.Length > 0 && args[0].ToLowerInvariant() is "live" or "snapshot" or "history")
+var rootCommand = new RootCommand("beat-track — music listening analysis across Last.fm, YouTube, and Discogs");
+
+// --- Shared options (re-created per command to avoid sharing) ---
+static Option<string> WindowOption() => new("--window") { Description = "Time window (7d, 30d, 90d, 365d, all)", DefaultValueFactory = _ => "7d" };
+static Option<int> LimitOption(int defaultValue = 50) => new("--limit") { Description = "Max items to display", DefaultValueFactory = _ => defaultValue };
+
+// --- Helper: load scrobbles ---
+static (IReadOnlyList<LastFmScrobble>? Scrobbles, string? Path) LoadScrobbles()
 {
-    var config_api = new BeatTrackConfig(BeatTrackPaths.ConfigFile);
-    var apiKey = config_api.LastFmApiKey ?? Environment.GetEnvironmentVariable("LASTFM_API_KEY");
+    var projectRoot = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+    var workspaceData = System.IO.Path.GetFullPath(System.IO.Path.Combine(projectRoot, "..", "..", "data"));
+    var homeData = BeatTrackPaths.DataDir;
+
+    var statsPath = FindByPattern(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
+        "lastfmstats-*.csv",
+        System.IO.Path.Combine(workspaceData, "lastfmstats"), System.IO.Path.Combine(homeData, "lastfmstats"));
+
+    if (statsPath is null) return (null, null);
+
+    using var csvReader = File.OpenText(statsPath);
+    return (LastFmStatsCsvReader.ParseCsv(csvReader), statsPath);
+}
+
+static int RunWithScrobbles(Func<IReadOnlyList<LastFmScrobble>, int> action)
+{
+    var (scrobbles, path) = LoadScrobbles();
+    if (scrobbles is null)
+    {
+        Console.Error.WriteLine("No lastfmstats CSV found. Run 'beat-track history' first or set BEAT_TRACK_LASTFM_STATS_CSV.");
+        return 1;
+    }
+
+    Console.Error.WriteLine($"loaded: {scrobbles.Count:N0} scrobbles from {System.IO.Path.GetFileName(path)}");
+    Console.Error.WriteLine();
+    return action(scrobbles);
+}
+
+// --- Helper: resolve API client ---
+static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClient()
+{
+    var config = new BeatTrackConfig(BeatTrackPaths.ConfigFile);
+    var apiKey = config.LastFmApiKey ?? Environment.GetEnvironmentVariable("LASTFM_API_KEY");
     if (string.IsNullOrWhiteSpace(apiKey))
     {
         Console.Error.WriteLine("No API key found. Set it in:");
         Console.Error.WriteLine($"  config:  {BeatTrackPaths.ConfigFile}  (lastfm_api_key=YOUR_KEY)");
         Console.Error.WriteLine("  env:     LASTFM_API_KEY");
-        return 1;
+        return (null, null, null);
     }
 
-    var userName_api = config_api.LastFmUser ?? Environment.GetEnvironmentVariable("LASTFM_USER");
-    var sharedSecret = config_api.LastFmSharedSecret ?? Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
-    using var httpClient_api = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-    var client = new LastFmClient(httpClient_api, new LastFmClientOptions(apiKey, sharedSecret, "beat-track"));
+    var userName = config.LastFmUser ?? Environment.GetEnvironmentVariable("LASTFM_USER");
+    var sharedSecret = config.LastFmSharedSecret ?? Environment.GetEnvironmentVariable("LASTFM_SHARED_SECRET");
+    var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+    var client = new LastFmClient(http, new LastFmClientOptions(apiKey, sharedSecret, "beat-track"));
+    return (client, userName, http);
+}
 
-    if (args[0].ToLowerInvariant() is "live")
+// ============================================================
+// Commands
+// ============================================================
+
+// --- momentum ---
+{
+    var cmd = new Command("momentum", "What's heating up, new, fading, and coming back");
+    var w = WindowOption(); var l = LimitOption(5);
+    cmd.Options.Add(w); cmd.Options.Add(l);
+    cmd.SetAction((pr) => RunWithScrobbles(s => MomentumQuery.Run(s, ["--window", pr.GetValue(w)!, "--limit", pr.GetValue(l).ToString()])));
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- top-artists ---
+{
+    var cmd = new Command("top-artists", "Top artists by play count in a time window");
+    var w = WindowOption(); var l = LimitOption();
+    cmd.Options.Add(w); cmd.Options.Add(l);
+    cmd.SetAction((pr) => RunWithScrobbles(s => TopArtistsQuery.Run(s, ["--window", pr.GetValue(w)!, "--limit", pr.GetValue(l).ToString()])));
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- new-discoveries ---
+{
+    var cmd = new Command("new-discoveries", "Engagement gradient: new, first click, rediscovery, longtime fan");
+    var w = WindowOption(); var l = LimitOption();
+    var min = new Option<int>("--min") { Description = "Minimum plays to include", DefaultValueFactory = _ => 3 };
+    var gap = new Option<int>("--gap") { Description = "Dormancy gap in days for rediscovery", DefaultValueFactory = _ => 180 };
+    cmd.Options.Add(w); cmd.Options.Add(l); cmd.Options.Add(min); cmd.Options.Add(gap);
+    cmd.SetAction((pr) => RunWithScrobbles(s => NewDiscoveriesQuery.Run(s,
+        ["--window", pr.GetValue(w)!, "--limit", pr.GetValue(l).ToString(), "--min", pr.GetValue(min).ToString(), "--gap", pr.GetValue(gap).ToString()])));
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- artist-depth ---
+{
+    var cmd = new Command("artist-depth", "Catalog explorers vs one-hit wonders");
+    var w = WindowOption(); var l = LimitOption();
+    var mode = new Option<string>("--mode") { Description = "Mode: deep, shallow, or all", DefaultValueFactory = _ => "deep" };
+    var min = new Option<int>("--min") { Description = "Minimum plays to include", DefaultValueFactory = _ => 20 };
+    cmd.Options.Add(w); cmd.Options.Add(l); cmd.Options.Add(mode); cmd.Options.Add(min);
+    cmd.SetAction((pr) => RunWithScrobbles(s => ArtistDepthQuery.Run(s,
+        ["--window", pr.GetValue(w)!, "--limit", pr.GetValue(l).ToString(), "--mode", pr.GetValue(mode)!, "--min", pr.GetValue(min).ToString()])));
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- artist-velocity ---
+{
+    var cmd = new Command("artist-velocity", "Cumulative play curves over time");
+    var top = new Option<int>("--top") { Description = "Number of top artists", DefaultValueFactory = _ => 10 };
+    var artists = new Option<string?>("--artists") { Description = "Comma-separated artist names" };
+    var bucket = new Option<string>("--bucket") { Description = "Bucket: daily, weekly, monthly, quarterly, yearly", DefaultValueFactory = _ => "monthly" };
+    cmd.Options.Add(top); cmd.Options.Add(artists); cmd.Options.Add(bucket);
+    cmd.SetAction((pr) =>
     {
-        var liveArgs = args[1..];
-        // Find username in args: skip flags and their values
-        var flagsWithValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "-n", "--interval" };
-        string? liveUser = null;
-        for (var i = 0; i < liveArgs.Length; i++)
-        {
-            if (liveArgs[i].StartsWith('-'))
-            {
-                if (flagsWithValues.Contains(liveArgs[i])) i++;
-                continue;
-            }
-            liveUser = liveArgs[i];
-            break;
-        }
-        liveUser ??= userName_api;
+        var queryArgs = new List<string> { "--top", pr.GetValue(top).ToString(), "--bucket", pr.GetValue(bucket)! };
+        var a = pr.GetValue(artists);
+        if (a is not null) { queryArgs.Add("--artists"); queryArgs.Add(a); }
+        return RunWithScrobbles(s => ArtistVelocityQuery.Run(s, [.. queryArgs]));
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
 
-        if (string.IsNullOrWhiteSpace(liveUser))
-        {
-            Console.Error.WriteLine("Pass a username or set lastfm_user in config.");
-            return 1;
-        }
-
-        return await LiveCommand.RunAsync(client, liveUser, liveArgs);
-    }
-
-    // snapshot command
-    if (args[0].ToLowerInvariant() is "snapshot")
+// --- streaks ---
+{
+    var cmd = new Command("streaks", "Consecutive-day listening streaks");
+    var artist = new Option<string?>("--artist") { Description = "Show streaks for a specific artist" };
+    cmd.Options.Add(artist);
+    cmd.SetAction((pr) =>
     {
-        if (string.IsNullOrWhiteSpace(userName_api))
-        {
-            Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var.");
-            return 1;
-        }
+        var a = pr.GetValue(artist);
+        var queryArgs = a is not null ? new[] { "--artist", a } : Array.Empty<string>();
+        return RunWithScrobbles(s => StreaksQuery.Run(s, queryArgs));
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
 
-        Console.Error.WriteLine($"Fetching snapshot for {userName_api}...");
-        var snapshot_api = await SnapshotFetcher.FetchAsync(client, userName_api);
+// --- stats ---
+{
+    var cmd = new Command("stats", "Overall listening statistics");
+    cmd.SetAction((_) => RunWithScrobbles(StatsQuery.Run));
+    rootCommand.Subcommands.Add(cmd);
+}
 
-        var outputPath = args.Length > 2 && args[1] is "--output" ? args[2] : null;
-        outputPath ??= Path.Combine(BeatTrackPaths.DataDir, $"{userName_api}-snapshot.json");
+// --- duration ---
+{
+    var cmd = new Command("duration", "Listening hours by artist");
+    cmd.SetAction((_) => RunWithScrobbles(DurationQuery.Run));
+    rootCommand.Subcommands.Add(cmd);
+}
 
-        var dir = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrWhiteSpace(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
+// --- miss ---
+{
+    var cmd = new Command("miss", "Track artists you've tried but don't connect with");
+    cmd.SetAction((_) => HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), []));
 
-        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(snapshot_api, AppJsonContext.Default.BeatTrackSnapshot));
+    var addCmd = new Command("add", "Add an artist to known misses");
+    var artistArg = new Argument<string>("artist") { Description = "Artist name" };
+    var reasonOpt = new Option<string?>("--reason") { Description = "Why this artist doesn't work for you" };
+    addCmd.Arguments.Add(artistArg); addCmd.Options.Add(reasonOpt);
+    addCmd.SetAction((pr) =>
+    {
+        var queryArgs = new List<string> { "add", pr.GetValue(artistArg)! };
+        var r = pr.GetValue(reasonOpt);
+        if (r is not null) { queryArgs.Add("--reason"); queryArgs.Add(r); }
+        return HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), [.. queryArgs]);
+    });
+    cmd.Subcommands.Add(addCmd);
 
-        Console.WriteLine($"user: {snapshot_api.Profile.UserName}");
-        Console.WriteLine($"play_count: {snapshot_api.Profile.PlayCount?.ToString() ?? ""}");
-        Console.WriteLine($"recent_tracks: {snapshot_api.RecentTracks.Count}");
-        Console.WriteLine($"loved_tracks: {snapshot_api.LovedTracks.Count}");
-        Console.WriteLine($"top_artist_periods: {snapshot_api.TopArtistsByPeriod.Count}");
+    var removeCmd = new Command("remove", "Remove an artist from known misses");
+    var removeArg = new Argument<string>("artist") { Description = "Artist name" };
+    removeCmd.Arguments.Add(removeArg);
+    removeCmd.SetAction((pr) => HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), ["remove", pr.GetValue(removeArg)!]));
+    cmd.Subcommands.Add(removeCmd);
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- status ---
+{
+    var cmd = new Command("status", "Show configuration and data availability");
+    cmd.SetAction((_) =>
+    {
+        var pr = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var wd = System.IO.Path.GetFullPath(System.IO.Path.Combine(pr, "..", "..", "data"));
+        var hd = BeatTrackPaths.DataDir;
+        return StatusQuery.Run(hd, BeatTrackPaths.CacheDir, BeatTrackPaths.ConfigFile, [wd, hd]);
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- live ---
+{
+    var cmd = new Command("live", "Real-time scrobble feed (requires API key)");
+    var n = new Option<int?>("-n") { Description = "Number of recent tracks to show" };
+    var f = new Option<bool>("-f") { Description = "Follow mode (poll for new scrobbles)" };
+    var userArg = new Argument<string?>("username") { Description = "Last.fm username (defaults to config)", Arity = ArgumentArity.ZeroOrOne };
+    cmd.Options.Add(n); cmd.Options.Add(f); cmd.Arguments.Add(userArg);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var (client, configUser, http) = CreateApiClient();
+        if (client is null) return 1;
+        using var _ = http;
+        var user = pr.GetValue(userArg) ?? configUser;
+        if (string.IsNullOrWhiteSpace(user)) { Console.Error.WriteLine("Pass a username or set lastfm_user in config."); return 1; }
+        var liveArgs = new List<string>();
+        var count = pr.GetValue(n);
+        if (count is not null) { liveArgs.Add("-n"); liveArgs.Add(count.Value.ToString()); }
+        if (pr.GetValue(f)) liveArgs.Add("-f");
+        liveArgs.Add(user);
+        return await LiveCommand.RunAsync(client, user, [.. liveArgs]);
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- snapshot ---
+{
+    var cmd = new Command("snapshot", "Fetch top artists and loved tracks from Last.fm");
+    var output = new Option<string?>("--output") { Description = "Custom output path for snapshot JSON" };
+    cmd.Options.Add(output);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var (client, userName, http) = CreateApiClient();
+        if (client is null) return 1;
+        using var _ = http;
+        if (string.IsNullOrWhiteSpace(userName)) { Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var."); return 1; }
+        Console.Error.WriteLine($"Fetching snapshot for {userName}...");
+        var snapshot = await SnapshotFetcher.FetchAsync(client, userName);
+        var outputPath = pr.GetValue(output) ?? System.IO.Path.Combine(BeatTrackPaths.DataDir, $"{userName}-snapshot.json");
+        var dir = System.IO.Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(snapshot, AppJsonContext.Default.BeatTrackSnapshot));
+        Console.WriteLine($"user: {snapshot.Profile.UserName}");
+        Console.WriteLine($"play_count: {snapshot.Profile.PlayCount?.ToString() ?? ""}");
+        Console.WriteLine($"recent_tracks: {snapshot.RecentTracks.Count}");
+        Console.WriteLine($"loved_tracks: {snapshot.LovedTracks.Count}");
+        Console.WriteLine($"top_artist_periods: {snapshot.TopArtistsByPeriod.Count}");
         Console.WriteLine($"snapshot_written_to: {outputPath}");
         return 0;
-    }
-
-    // history command — fetch full scrobble history
-    if (string.IsNullOrWhiteSpace(userName_api))
-    {
-        Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var.");
-        return 1;
-    }
-
-    var historyTracks = await HistoryFetcher.FetchAllAsync(client, userName_api);
-
-    var historyDir = Path.Combine(BeatTrackPaths.DataDir, "lastfmstats");
-    Directory.CreateDirectory(historyDir);
-    var historyPath = Path.Combine(historyDir, $"lastfmstats-{userName_api}.csv");
-
-    using (var writer = new StreamWriter(historyPath))
-    {
-        HistoryFetcher.WriteCsv(writer, historyTracks, userName_api);
-    }
-
-    Console.WriteLine($"scrobbles: {historyTracks.Count:N0}");
-    Console.WriteLine($"written_to: {historyPath}");
-    return 0;
+    });
+    rootCommand.Subcommands.Add(cmd);
 }
 
-// --- Skill command: print the SKILL.md for agent consumption ---
-if (args.Length > 0 && args[0].ToLowerInvariant() is "skill")
+// --- history ---
 {
-    using var stream = typeof(Program).Assembly.GetManifestResourceStream("SKILL.md");
-    if (stream is null)
+    var cmd = new Command("history", "Download full scrobble history from Last.fm");
+    cmd.SetAction(async (pr, ct) =>
     {
-        Console.Error.WriteLine("SKILL.md not found in assembly resources.");
-        return 1;
+        var (client, userName, http) = CreateApiClient();
+        if (client is null) return 1;
+        using var _ = http;
+        if (string.IsNullOrWhiteSpace(userName)) { Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var."); return 1; }
+        var historyTracks = await HistoryFetcher.FetchAllAsync(client, userName);
+        var historyDir = System.IO.Path.Combine(BeatTrackPaths.DataDir, "lastfmstats");
+        Directory.CreateDirectory(historyDir);
+        var historyPath = System.IO.Path.Combine(historyDir, $"lastfmstats-{userName}.csv");
+        using (var writer = new StreamWriter(historyPath)) { HistoryFetcher.WriteCsv(writer, historyTracks, userName); }
+        Console.WriteLine($"scrobbles: {historyTracks.Count:N0}");
+        Console.WriteLine($"written_to: {historyPath}");
+        return 0;
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- analyze ---
+{
+    var cmd = new Command("analyze", "Full cross-source analysis (Last.fm + YouTube + Discogs)");
+    cmd.SetAction(async (pr, ct) => await RunFullAnalysis());
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- skill ---
+{
+    var cmd = new Command("skill", "Print the agent skill definition");
+    cmd.SetAction((_) =>
+    {
+        using var stream = typeof(Program).Assembly.GetManifestResourceStream("SKILL.md");
+        if (stream is null) { Console.Error.WriteLine("SKILL.md not found in assembly resources."); return 1; }
+        using var reader = new StreamReader(stream);
+        Console.Write(reader.ReadToEnd());
+        return 0;
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// ============================================================
+// Run
+// ============================================================
+return rootCommand.Parse(args).Invoke();
+
+// ============================================================
+// Full analysis (moved from bare invocation)
+// ============================================================
+async Task<int> RunFullAnalysis()
+{
+    var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
+    var workspaceData = Path.GetFullPath(Path.Combine(projectRoot, "..", "..", "data"));
+    var homeData = BeatTrackPaths.DataDir;
+
+    // --- Load Last.fm snapshot ---
+    var lastFmPath = FindByPattern(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH"),
+        "*-snapshot.json",
+        Path.Combine(projectRoot, "data"), workspaceData, homeData);
+
+    BeatTrackSnapshot? lastFmSnapshot = null;
+    if (lastFmPath is not null)
+    {
+        await using var stream = File.OpenRead(lastFmPath);
+        lastFmSnapshot = await JsonSerializer.DeserializeAsync(stream, AppJsonContext.Default.BeatTrackSnapshot);
+        Console.WriteLine($"lastfm: {lastFmSnapshot?.RecentTracks.Count} recent tracks, {lastFmSnapshot?.TopArtistsByPeriod.Values.SelectMany(static x => x).Select(static x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique top artists, {lastFmSnapshot?.LovedTracks.Count} loved tracks");
+    }
+    else
+    {
+        Console.WriteLine("lastfm: (no snapshot found)");
     }
 
-    using var reader = new StreamReader(stream);
-    Console.Write(reader.ReadToEnd());
-    return 0;
-}
+    // --- Load Discogs collection ---
+    var discogsCsvPath = FindByPattern(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_DISCOGS_CSV"),
+        "*-collection-*.csv",
+        Path.Combine(workspaceData, "collection-csv"), Path.Combine(homeData, "collection-csv"));
 
-// --- Quick-path: scrobble-only queries that don't need full profile loading ---
-// --- Status command (no data loading needed) ---
-if (args.Length > 0 && args[0].ToLowerInvariant() is "status")
-{
-    var projectRoot_s = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-    var workspaceData_s = Path.GetFullPath(Path.Combine(projectRoot_s, "..", "..", "data"));
-    var homeData_s = BeatTrackPaths.DataDir;
-    var searchDirs = new[] { workspaceData_s, homeData_s };
-    return StatusQuery.Run(homeData_s, BeatTrackPaths.CacheDir, BeatTrackPaths.ConfigFile, searchDirs);
-}
-
-if (args.Length > 0 && args[0].ToLowerInvariant() is "stats" or "duration" or "streaks" or "top-artists" or "artist-velocity" or "new-discoveries" or "artist-depth" or "cluster" or "miss" or "momentum")
-{
-    // Only load the lastfmstats CSV
-    var projectRoot0 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-    var workspaceData0 = Path.GetFullPath(Path.Combine(projectRoot0, "..", "..", "data"));
-    var homeData0 = BeatTrackPaths.DataDir;
-
-    static string? FindByPattern0(string? envOverride, string pattern, params string[] dirs)
+    BeatTrackDiscogsSnapshot? discogsSnapshot = null;
+    if (discogsCsvPath is not null)
     {
-        if (envOverride is not null && File.Exists(envOverride)) return envOverride;
-        foreach (var dir in dirs)
+        var discogsReader = new DiscogsCollectionCsvReader();
+        using var csvReader = File.OpenText(discogsCsvPath);
+        var releases = discogsReader.ParseCsv(csvReader);
+        discogsSnapshot = new BeatTrackDiscogsSnapshot(DateTimeOffset.UtcNow, releases);
+        Console.WriteLine($"discogs: {releases.Count} releases, {releases.Select(static r => r.ArtistName).Where(static n => n is not null).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique artists");
+    }
+    else
+    {
+        Console.WriteLine("discogs: (no CSV found)");
+    }
+
+    // --- Load YouTube data ---
+    var takeoutDir = FindDir(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_TAKEOUT_DIR"),
+        Path.Combine(workspaceData, "takeout"),
+        Path.Combine(homeData, "takeout"))
+        ?? Path.Combine(workspaceData, "takeout");
+
+    var musicLibraryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "music (library and uploads)", "music library songs.csv");
+    var watchHistoryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "history", "watch-history.html");
+
+    BeatTrackYouTubeSnapshot? youTubeSnapshot = null;
+    if (File.Exists(musicLibraryPath) && File.Exists(watchHistoryPath))
+    {
+        var knownArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (lastFmSnapshot is not null)
         {
-            if (!Directory.Exists(dir)) continue;
-            var match = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
-            if (match is not null) return match;
+            foreach (var track in lastFmSnapshot.RecentTracks)
+                if (!string.IsNullOrWhiteSpace(track.ArtistName)) knownArtists.Add(track.ArtistName);
+            foreach (var (_, periodArtists) in lastFmSnapshot.TopArtistsByPeriod)
+                foreach (var artist in periodArtists)
+                    if (!string.IsNullOrWhiteSpace(artist.Name)) knownArtists.Add(artist.Name);
+            foreach (var track in lastFmSnapshot.LovedTracks)
+                if (!string.IsNullOrWhiteSpace(track.ArtistName)) knownArtists.Add(track.ArtistName);
         }
-        return null;
+
+        if (discogsSnapshot is not null)
+            foreach (var release in discogsSnapshot.Releases)
+                if (!string.IsNullOrWhiteSpace(release.ArtistName)) knownArtists.Add(release.ArtistName);
+
+        var ytClient = new YouTubeTakeoutClient();
+        using var musicReader = File.OpenText(musicLibraryPath);
+        var savedTracks = ytClient.ParseMusicLibrarySongs(musicReader);
+        foreach (var artist in savedTracks.SelectMany(static t => t.ArtistNames))
+            knownArtists.Add(artist);
+
+        var classifier = new MusicClassifier(knownArtists);
+        var watchHtml = await File.ReadAllTextAsync(watchHistoryPath);
+        var watchEvents = ytClient.ParseWatchHistoryHtml(watchHtml, classifier);
+
+        youTubeSnapshot = new BeatTrackYouTubeSnapshot(DateTimeOffset.UtcNow, savedTracks, watchEvents);
+        Console.WriteLine($"youtube: {savedTracks.Count} saved tracks, {watchEvents.Count} watch events ({watchEvents.Count(static e => e.IsMusicCandidate)} music candidates, {knownArtists.Count} known artists used)");
     }
-
-    var statsPath = FindByPattern0(
-        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-        "lastfmstats-*.csv",
-        Path.Combine(workspaceData0, "lastfmstats"), Path.Combine(homeData0, "lastfmstats"));
-
-    if (statsPath is null)
+    else
     {
-        Console.Error.WriteLine("No lastfmstats CSV found. Set BEAT_TRACK_LASTFM_STATS_CSV or place it in data/lastfmstats/.");
-        return 1;
+        Console.WriteLine("youtube: (no takeout data found)");
     }
 
-    // Handle "miss" command before loading scrobbles (it doesn't need them)
-    if (args[0].ToLowerInvariant() is "miss")
-    {
-        var missPath = Path.Combine(homeData0, "known-misses.md");
-        return HandleMissCommand(missPath, args[1..]);
-    }
-
-    using var csvReader = File.OpenText(statsPath);
-    var allScrobbles = LastFmStatsCsvReader.ParseCsv(csvReader);
-    Console.WriteLine($"loaded: {allScrobbles.Count:N0} scrobbles from {Path.GetFileName(statsPath)}");
     Console.WriteLine();
 
-    return args[0].ToLowerInvariant() switch
-    {
-        "stats" => StatsQuery.Run(allScrobbles),
-        "duration" => DurationQuery.Run(allScrobbles),
-        "streaks" => StreaksQuery.Run(allScrobbles, args[1..]),
-        "top-artists" => TopArtistsQuery.Run(allScrobbles, args[1..]),
-        "artist-velocity" => ArtistVelocityQuery.Run(allScrobbles, args[1..]),
-        "new-discoveries" => NewDiscoveriesQuery.Run(allScrobbles, args[1..]),
-        "artist-depth" => ArtistDepthQuery.Run(allScrobbles, args[1..]),
-        "cluster" => ClusterExplorationQuery.Run(allScrobbles, args[1..]),
-        "momentum" => MomentumQuery.Run(allScrobbles, args[1..]),
-        _ => 1,
-    };
-}
+    // --- Build unified profile ---
+    var profile = BeatTrackUnifiedProfileBuilder.Build(lastFmSnapshot, youTubeSnapshot, discogsSnapshot);
+    Console.WriteLine($"unified_artists: {profile.Artists.Count}");
+    Console.WriteLine($"unified_releases: {profile.Releases.Count}");
+    Console.WriteLine();
 
-// --- Resolve data directories ---
-// Search for data in: env var, workspace/data, XDG data dir
-static string? FindDir(string? envOverride, params string[] searchPaths)
-{
-    if (envOverride is not null && Directory.Exists(envOverride)) return envOverride;
-    foreach (var path in searchPaths)
+    // --- Cross-source analysis ---
+    var multiSource = profile.Artists.Where(static a => a.Sources.Select(static s => s.Source).Distinct().Count() > 1).ToList();
+    var allThree = profile.Artists.Where(static a => a.Sources.Select(static s => s.Source).Distinct().Count() == 3).ToList();
+    var lastFmOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.LastFm)).ToList();
+    var youTubeOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.YouTube)).ToList();
+    var discogsOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.Discogs)).ToList();
+
+    Console.WriteLine("artist_source_breakdown:");
+    Console.WriteLine($"  all_three_sources: {allThree.Count}");
+    Console.WriteLine($"  multi_source: {multiSource.Count}");
+    Console.WriteLine($"  lastfm_only: {lastFmOnly.Count}");
+    Console.WriteLine($"  youtube_only: {youTubeOnly.Count}");
+    Console.WriteLine($"  discogs_only: {discogsOnly.Count}");
+
+    Console.WriteLine();
+    Console.WriteLine("artists_in_all_three_sources:");
+    foreach (var artist in allThree.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
     {
-        if (Directory.Exists(path)) return path;
+        var names = artist.Sources.Select(static s => $"{s.Source}:{s.OriginalName}").Distinct();
+        Console.WriteLine($"  {artist.CanonicalName} ({string.Join(", ", names)})");
     }
-    return null;
-}
 
-// Find first file matching a glob pattern in multiple directories
-static string? FindByPattern(string? envOverride, string pattern, params string[] searchDirs)
-{
-    if (envOverride is not null && File.Exists(envOverride)) return envOverride;
-    foreach (var dir in searchDirs)
+    var discogsAndLastFm = profile.Artists
+        .Where(static a => a.Sources.Any(static s => s.Source == BeatTrackSource.Discogs)
+            && a.Sources.Any(static s => s.Source == BeatTrackSource.LastFm))
+        .ToList();
+
+    Console.WriteLine();
+    Console.WriteLine($"discogs_and_lastfm ({discogsAndLastFm.Count} artists — owned + actively listened to):");
+    foreach (var artist in discogsAndLastFm.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
+        Console.WriteLine($"  {artist.CanonicalName}");
+
+    Console.WriteLine();
+    Console.WriteLine($"discogs_only ({discogsOnly.Count} artists — owned but not in any listening data):");
+    foreach (var artist in discogsOnly.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
+        Console.WriteLine($"  {artist.CanonicalName}");
+
+    var youTubeNotDiscogs = profile.Artists
+        .Where(static a => a.Sources.Any(static s => s.Source == BeatTrackSource.YouTube)
+            && !a.Sources.Any(static s => s.Source == BeatTrackSource.Discogs))
+        .ToList();
+
+    Console.WriteLine();
+    Console.WriteLine($"youtube_not_discogs ({youTubeNotDiscogs.Count} artists — listen on YouTube but don't own):");
+    foreach (var artist in youTubeNotDiscogs.Take(30).OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
+        Console.WriteLine($"  {artist.CanonicalName}");
+    if (youTubeNotDiscogs.Count > 30)
+        Console.WriteLine($"  ... and {youTubeNotDiscogs.Count - 30} more");
+
+    var multiSourceReleases = profile.Releases.Where(static r => r.Sources.Select(static s => s.Source).Distinct().Count() > 1).ToList();
+    Console.WriteLine();
+    Console.WriteLine($"cross_source_releases ({multiSourceReleases.Count}):");
+    foreach (var release in multiSourceReleases.OrderBy(static r => r.ArtistCanonicalName).ThenBy(static r => r.Title))
     {
-        if (!Directory.Exists(dir)) continue;
-        var match = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
-        if (match is not null) return match;
+        var sources = string.Join(", ", release.Sources.Select(static s => s.Source).Distinct());
+        Console.WriteLine($"  {release.ArtistCanonicalName} - {release.Title} [{sources}]");
     }
-    return null;
-}
 
-var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
-var workspaceData = Path.GetFullPath(Path.Combine(projectRoot, "..", "..", "data"));
-var homeData = BeatTrackPaths.DataDir;
+    // === MBID cache + Gap analysis ===
+    var cacheDir = BeatTrackPaths.CacheDir;
+    var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
+    var mbidCache = new MbidCache(mbidCachePath);
+    Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
 
-// --- Load Last.fm snapshot ---
-var lastFmPath = FindByPattern(
-    Environment.GetEnvironmentVariable("BEAT_TRACK_SNAPSHOT_PATH"),
-    "*-snapshot.json",
-    Path.Combine(projectRoot, "data"), workspaceData, homeData);
+    var knownMissesPath = Path.Combine(homeData, "known-misses.md");
+    var knownMisses = new KnownMisses(knownMissesPath);
+    if (knownMisses.Count > 0)
+        Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
 
-BeatTrackSnapshot? lastFmSnapshot = null;
-if (lastFmPath is not null)
-{
-    await using var stream = File.OpenRead(lastFmPath);
-    lastFmSnapshot = await JsonSerializer.DeserializeAsync(stream, AppJsonContext.Default.BeatTrackSnapshot);
-    Console.WriteLine($"lastfm: {lastFmSnapshot?.RecentTracks.Count} recent tracks, {lastFmSnapshot?.TopArtistsByPeriod.Values.SelectMany(static x => x).Select(static x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique top artists, {lastFmSnapshot?.LovedTracks.Count} loved tracks");
-}
-else
-{
-    Console.WriteLine("lastfm: (no snapshot found)");
-}
+    var userFavorites = new UserFavorites(Path.Combine(homeData, "my-favorites.md"));
+    if (userFavorites.Count > 0)
+        Console.WriteLine($"user_favorites: {userFavorites.Count} artists");
 
-// --- Load Discogs collection ---
-var discogsCsvPath = FindByPattern(
-    Environment.GetEnvironmentVariable("BEAT_TRACK_DISCOGS_CSV"),
-    "*-collection-*.csv",
-    Path.Combine(workspaceData, "collection-csv"), Path.Combine(homeData, "collection-csv"));
-
-BeatTrackDiscogsSnapshot? discogsSnapshot = null;
-if (discogsCsvPath is not null)
-{
-    var discogsReader = new DiscogsCollectionCsvReader();
-    using var csvReader = File.OpenText(discogsCsvPath);
-    var releases = discogsReader.ParseCsv(csvReader);
-    discogsSnapshot = new BeatTrackDiscogsSnapshot(DateTimeOffset.UtcNow, releases);
-    Console.WriteLine($"discogs: {releases.Count} releases, {releases.Select(static r => r.ArtistName).Where(static n => n is not null).Distinct(StringComparer.OrdinalIgnoreCase).Count()} unique artists");
-}
-else
-{
-    Console.WriteLine("discogs: (no CSV found)");
-}
-
-// --- Load YouTube data (with classifier built from Last.fm + Discogs) ---
-var takeoutDir = FindDir(
-    Environment.GetEnvironmentVariable("BEAT_TRACK_TAKEOUT_DIR"),
-    Path.Combine(workspaceData, "takeout"),
-    Path.Combine(homeData, "takeout"))
-    ?? Path.Combine(workspaceData, "takeout");
-
-var musicLibraryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "music (library and uploads)", "music library songs.csv");
-var watchHistoryPath = Path.Combine(takeoutDir, "extracted", "Takeout", "YouTube and YouTube Music", "history", "watch-history.html");
-
-BeatTrackYouTubeSnapshot? youTubeSnapshot = null;
-if (File.Exists(musicLibraryPath) && File.Exists(watchHistoryPath))
-{
-    // Build known artist set from Last.fm + Discogs + YouTube saved tracks
-    var knownArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var userSimilar = new UserSimilarArtists(Path.Combine(homeData, "my-similar-artists.md"));
+    if (userSimilar.Count > 0)
+        Console.WriteLine($"user_similar_artists: {userSimilar.Count} artists with user-defined similarities");
 
     if (lastFmSnapshot is not null)
     {
-        foreach (var track in lastFmSnapshot.RecentTracks)
-        {
-            if (!string.IsNullOrWhiteSpace(track.ArtistName)) knownArtists.Add(track.ArtistName);
-        }
-
-        foreach (var (_, periodArtists) in lastFmSnapshot.TopArtistsByPeriod)
-        {
-            foreach (var artist in periodArtists)
-            {
-                if (!string.IsNullOrWhiteSpace(artist.Name)) knownArtists.Add(artist.Name);
-            }
-        }
-
-        foreach (var track in lastFmSnapshot.LovedTracks)
-        {
-            if (!string.IsNullOrWhiteSpace(track.ArtistName)) knownArtists.Add(track.ArtistName);
-        }
+        var added = mbidCache.AddFromLastFmSnapshot(lastFmSnapshot);
+        if (added > 0) Console.WriteLine($"mbid_cache: added {added} from Last.fm snapshot");
     }
 
-    if (discogsSnapshot is not null)
-    {
-        foreach (var release in discogsSnapshot.Releases)
-        {
-            if (!string.IsNullOrWhiteSpace(release.ArtistName)) knownArtists.Add(release.ArtistName);
-        }
-    }
-
-    var ytClient = new YouTubeTakeoutClient();
-    using var musicReader = File.OpenText(musicLibraryPath);
-    var savedTracks = ytClient.ParseMusicLibrarySongs(musicReader);
-
-    foreach (var artist in savedTracks.SelectMany(static t => t.ArtistNames))
-    {
-        knownArtists.Add(artist);
-    }
-
-    var classifier = new MusicClassifier(knownArtists);
-    var watchHtml = await File.ReadAllTextAsync(watchHistoryPath);
-    var watchEvents = ytClient.ParseWatchHistoryHtml(watchHtml, classifier);
-
-    youTubeSnapshot = new BeatTrackYouTubeSnapshot(DateTimeOffset.UtcNow, savedTracks, watchEvents);
-    Console.WriteLine($"youtube: {savedTracks.Count} saved tracks, {watchEvents.Count} watch events ({watchEvents.Count(static e => e.IsMusicCandidate)} music candidates, {knownArtists.Count} known artists used)");
-}
-else
-{
-    Console.WriteLine("youtube: (no takeout data found)");
-}
-
-Console.WriteLine();
-
-// --- Build unified profile ---
-var profile = BeatTrackUnifiedProfileBuilder.Build(lastFmSnapshot, youTubeSnapshot, discogsSnapshot);
-
-Console.WriteLine($"unified_artists: {profile.Artists.Count}");
-Console.WriteLine($"unified_releases: {profile.Releases.Count}");
-Console.WriteLine();
-
-// --- Cross-source analysis ---
-var multiSource = profile.Artists.Where(static a => a.Sources.Select(static s => s.Source).Distinct().Count() > 1).ToList();
-var allThree = profile.Artists.Where(static a => a.Sources.Select(static s => s.Source).Distinct().Count() == 3).ToList();
-var lastFmOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.LastFm)).ToList();
-var youTubeOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.YouTube)).ToList();
-var discogsOnly = profile.Artists.Where(static a => a.Sources.All(static s => s.Source == BeatTrackSource.Discogs)).ToList();
-
-Console.WriteLine("artist_source_breakdown:");
-Console.WriteLine($"  all_three_sources: {allThree.Count}");
-Console.WriteLine($"  multi_source: {multiSource.Count}");
-Console.WriteLine($"  lastfm_only: {lastFmOnly.Count}");
-Console.WriteLine($"  youtube_only: {youTubeOnly.Count}");
-Console.WriteLine($"  discogs_only: {discogsOnly.Count}");
-
-Console.WriteLine();
-Console.WriteLine("artists_in_all_three_sources:");
-foreach (var artist in allThree.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
-{
-    var names = artist.Sources.Select(static s => $"{s.Source}:{s.OriginalName}").Distinct();
-    Console.WriteLine($"  {artist.CanonicalName} ({string.Join(", ", names)})");
-}
-
-// Discogs artists also in Last.fm (owned + listened to)
-var discogsAndLastFm = profile.Artists
-    .Where(static a => a.Sources.Any(static s => s.Source == BeatTrackSource.Discogs)
-        && a.Sources.Any(static s => s.Source == BeatTrackSource.LastFm))
-    .ToList();
-
-Console.WriteLine();
-Console.WriteLine($"discogs_and_lastfm ({discogsAndLastFm.Count} artists — owned + actively listened to):");
-foreach (var artist in discogsAndLastFm.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
-{
-    Console.WriteLine($"  {artist.CanonicalName}");
-}
-
-// Discogs artists NOT in Last.fm or YouTube (owned but never listened to digitally)
-Console.WriteLine();
-Console.WriteLine($"discogs_only ({discogsOnly.Count} artists — owned but not in any listening data):");
-foreach (var artist in discogsOnly.OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
-{
-    Console.WriteLine($"  {artist.CanonicalName}");
-}
-
-// YouTube music artists NOT in Discogs (listen to but don't own)
-var youTubeNotDiscogs = profile.Artists
-    .Where(static a => a.Sources.Any(static s => s.Source == BeatTrackSource.YouTube)
-        && !a.Sources.Any(static s => s.Source == BeatTrackSource.Discogs))
-    .ToList();
-
-Console.WriteLine();
-Console.WriteLine($"youtube_not_discogs ({youTubeNotDiscogs.Count} artists — listen on YouTube but don't own):");
-foreach (var artist in youTubeNotDiscogs.Take(30).OrderBy(static a => a.CanonicalName, StringComparer.OrdinalIgnoreCase))
-{
-    Console.WriteLine($"  {artist.CanonicalName}");
-}
-
-if (youTubeNotDiscogs.Count > 30)
-{
-    Console.WriteLine($"  ... and {youTubeNotDiscogs.Count - 30} more");
-}
-
-// Cross-source releases
-var multiSourceReleases = profile.Releases.Where(static r => r.Sources.Select(static s => s.Source).Distinct().Count() > 1).ToList();
-Console.WriteLine();
-Console.WriteLine($"cross_source_releases ({multiSourceReleases.Count}):");
-foreach (var release in multiSourceReleases.OrderBy(static r => r.ArtistCanonicalName).ThenBy(static r => r.Title))
-{
-    var sources = string.Join(", ", release.Sources.Select(static s => s.Source).Distinct());
-    Console.WriteLine($"  {release.ArtistCanonicalName} - {release.Title} [{sources}]");
-}
-
-// === MBID cache + Gap analysis ===
-
-var cacheDir = BeatTrackPaths.CacheDir;
-
-var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
-var mbidCache = new MbidCache(mbidCachePath);
-Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
-
-// Load known misses — artists to exclude from recommendations
-var knownMissesPath = Path.Combine(homeData, "known-misses.md");
-var knownMisses = new KnownMisses(knownMissesPath);
-if (knownMisses.Count > 0)
-{
-    Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
-}
-
-// Load user-defined data
-var userFavorites = new UserFavorites(Path.Combine(homeData, "my-favorites.md"));
-if (userFavorites.Count > 0)
-{
-    Console.WriteLine($"user_favorites: {userFavorites.Count} artists");
-}
-
-var userSimilar = new UserSimilarArtists(Path.Combine(homeData, "my-similar-artists.md"));
-if (userSimilar.Count > 0)
-{
-    Console.WriteLine($"user_similar_artists: {userSimilar.Count} artists with user-defined similarities");
-}
-
-// Seed cache from Last.fm snapshot MBIDs
-if (lastFmSnapshot is not null)
-{
-    var added = mbidCache.AddFromLastFmSnapshot(lastFmSnapshot);
-    if (added > 0)
-    {
-        Console.WriteLine($"mbid_cache: added {added} from Last.fm snapshot");
-    }
-}
-
-// Look up MBIDs for top unified profile artists + user favorites that aren't cached yet
-var uncachedArtists = profile.Artists
-    .Select(static a => a.CanonicalName)
-    .Concat(userFavorites.GetCanonicalNames())
-    .Distinct(StringComparer.OrdinalIgnoreCase)
-    .Where(a => mbidCache.GetMbid(a) is null)
-    .Take(50)
-    .ToList();
-
-if (uncachedArtists.Count > 0)
-{
-    Console.Write($"mbid_lookup: resolving {uncachedArtists.Count} artists via MusicBrainz... ");
-    using var mbLookup = new MusicBrainzArtistLookup();
-    var confirmed = await mbLookup.LookupCandidatesAsync(uncachedArtists, cancellationToken: CancellationToken.None);
-
-    foreach (var result in confirmed)
-    {
-        if (result.MusicBrainzId is not null)
-        {
-            mbidCache.Set(
-                BeatTrackAnalysis.CanonicalizeArtistName(result.Query),
-                result.MusicBrainzId,
-                result.MatchedName,
-                "musicbrainz");
-        }
-    }
-
-    Console.WriteLine($"{confirmed.Count} confirmed");
-}
-
-mbidCache.Save();
-Console.WriteLine($"mbid_cache: {mbidCache.Count} total entries saved");
-
-// Collect seed artists with MBIDs for gap analysis
-var seedArtists = mbidCache.GetAll()
-    .Select(static e => (Mbid: e.Mbid, Name: e.MatchedName ?? e.CanonicalName))
-    .DistinctBy(static s => s.Mbid, StringComparer.OrdinalIgnoreCase)
-    .ToList();
-
-// Shared state for gap + re-engagement + strange absence analysis
-var allSimilar = new Dictionary<string, List<SimilarArtist>>(StringComparer.OrdinalIgnoreCase);
-var seedNameByMbid = seedArtists.ToDictionary(s => s.Mbid, s => s.Name, StringComparer.OrdinalIgnoreCase);
-var knownMbids = new HashSet<string>(
-    mbidCache.GetAll().Select(static e => e.Mbid),
-    StringComparer.OrdinalIgnoreCase);
-
-if (seedArtists.Count > 0)
-{
-    Console.WriteLine();
-    Console.WriteLine("=== Gap analysis: similar artists you might be missing ===");
-    Console.WriteLine($"seed_artists: {seedArtists.Count} (with MBIDs)");
-
-    // Build a set of all known artist names for comparison
-    var knownCanonical = new HashSet<string>(
-        profile.Artists.Select(static a => a.CanonicalName),
-        StringComparer.OrdinalIgnoreCase);
-
-    // Load similar artists cache — one markdown table per seed artist
-    var similarCacheDir = Path.Combine(cacheDir, "similar-artists");
-    Directory.CreateDirectory(similarCacheDir);
-
-    using var similarLookup = new ListenBrainzSimilarArtistsLookup();
-    var queriedCount = 0;
-    var cachedCount = 0;
-
-    Console.Write("  loading similar artists: ");
-    foreach (var (mbid, name) in seedArtists)
-    {
-        var cacheFile = Path.Combine(similarCacheDir, $"{mbid}.md");
-        if (File.Exists(cacheFile))
-        {
-            // Load from cache
-            var cached = LoadSimilarArtistsCache(cacheFile);
-            if (cached.Count > 0)
-            {
-                allSimilar[mbid] = cached;
-                cachedCount++;
-                continue;
-            }
-        }
-
-        // Query API and cache
-        try
-        {
-            var similar = await similarLookup.GetSimilarArtistsAsync(mbid);
-            if (similar.Count > 0)
-            {
-                allSimilar[mbid] = [.. similar];
-                SaveSimilarArtistsCache(cacheFile, name, similar);
-            }
-            queriedCount++;
-            Console.Write(".");
-        }
-        catch (HttpRequestException)
-        {
-            Console.Write("x");
-        }
-    }
-
-    Console.WriteLine($" ({cachedCount} cached, {queriedCount} queried)");
-
-    // Merge user-defined similarities (name-based, no MBIDs required)
-    if (userSimilar.Count > 0)
-    {
-        var userSimilarCount = 0;
-        foreach (var artist in userSimilar.GetAllArtists())
-        {
-            // Try to find MBID for this artist
-            var mbid = mbidCache.GetMbid(artist);
-            if (mbid is null) continue;
-
-            var similar = userSimilar.GetSimilar(artist);
-            foreach (var simName in similar)
-            {
-                var simMbid = mbidCache.GetMbid(simName);
-                if (simMbid is null) continue;
-
-                if (!allSimilar.TryGetValue(mbid, out var list))
-                {
-                    list = [];
-                    allSimilar[mbid] = list;
-                }
-
-                // Add as a user-sourced similar artist (high score to reflect user intent)
-                if (!list.Any(s => s.ArtistMbid.Equals(simMbid, StringComparison.OrdinalIgnoreCase)))
-                {
-                    list.Add(new SimilarArtist(simMbid, simName, 500, "user", mbid));
-                    userSimilarCount++;
-                }
-            }
-        }
-
-        if (userSimilarCount > 0)
-        {
-            Console.WriteLine($"  merged {userSimilarCount} user-defined similarities into graph");
-        }
-    }
-
-    // Aggregate across all seeds
-    var aggregatedMap = new Dictionary<string, (string Name, int TotalScore, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
-
-    foreach (var (seedMbid, similarList) in allSimilar)
-    {
-        var seedName = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-        foreach (var artist in similarList)
-        {
-            if (!aggregatedMap.TryGetValue(artist.ArtistMbid, out var entry))
-            {
-                entry = (artist.Name, 0, []);
-                aggregatedMap[artist.ArtistMbid] = entry;
-            }
-
-            entry.Seeds.Add(seedName);
-            aggregatedMap[artist.ArtistMbid] = (entry.Name, entry.TotalScore + artist.Score, entry.Seeds);
-        }
-    }
-
-    var aggregated = aggregatedMap
-        .Where(kvp => !knownMbids.Contains(kvp.Key))
-        .Select(kvp => new AggregatedSimilarArtist(kvp.Key, kvp.Value.Name, kvp.Value.Seeds.Count, kvp.Value.TotalScore, kvp.Value.Seeds))
-        .OrderByDescending(static a => a.SeedCount)
-        .ThenByDescending(static a => a.TotalScore)
+    var uncachedArtists = profile.Artists
+        .Select(static a => a.CanonicalName)
+        .Concat(userFavorites.GetCanonicalNames())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Where(a => mbidCache.GetMbid(a) is null)
+        .Take(50)
         .ToList();
 
-    Console.WriteLine($"total_similar: {aggregatedMap.Count} artists found across {allSimilar.Count} seeds");
+    if (uncachedArtists.Count > 0)
+    {
+        Console.Write($"mbid_lookup: resolving {uncachedArtists.Count} artists via MusicBrainz... ");
+        using var mbLookup = new MusicBrainzArtistLookup();
+        var confirmed = await mbLookup.LookupCandidatesAsync(uncachedArtists, cancellationToken: CancellationToken.None);
+        foreach (var result in confirmed)
+        {
+            if (result.MusicBrainzId is not null)
+                mbidCache.Set(BeatTrackAnalysis.CanonicalizeArtistName(result.Query), result.MusicBrainzId, result.MatchedName, "musicbrainz");
+        }
+        Console.WriteLine($"{confirmed.Count} confirmed");
+    }
 
-    // Filter to artists NOT in any of our sources and not known misses
-    var gaps = aggregated
-        .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name)))
-        .Where(a => !knownMisses.Contains(a.Name))
+    mbidCache.Save();
+    Console.WriteLine($"mbid_cache: {mbidCache.Count} total entries saved");
+
+    var seedArtists = mbidCache.GetAll()
+        .Select(static e => (Mbid: e.Mbid, Name: e.MatchedName ?? e.CanonicalName))
+        .DistinctBy(static s => s.Mbid, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
-    Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
-    Console.WriteLine();
+    var allSimilar = new Dictionary<string, List<SimilarArtist>>(StringComparer.OrdinalIgnoreCase);
+    var seedNameByMbid = seedArtists.ToDictionary(s => s.Mbid, s => s.Name, StringComparer.OrdinalIgnoreCase);
+    var knownMbids = new HashSet<string>(mbidCache.GetAll().Select(static e => e.Mbid), StringComparer.OrdinalIgnoreCase);
 
-    // Show top gaps — artists similar to the most seeds
-    Console.WriteLine("top_gaps (similar to multiple favorites but never listened to):");
-    foreach (var gap in gaps.Take(30))
+    if (seedArtists.Count > 0)
     {
-        var seeds = string.Join(", ", gap.SimilarToSeeds.Take(5));
-        Console.WriteLine($"  {gap.Name}  (similar to {gap.SeedCount} seeds: {seeds})");
-    }
+        Console.WriteLine();
+        Console.WriteLine("=== Gap analysis: similar artists you might be missing ===");
+        Console.WriteLine($"seed_artists: {seedArtists.Count} (with MBIDs)");
 
-    if (gaps.Count > 30)
-    {
-        Console.WriteLine($"  ... and {gaps.Count - 30} more");
-    }
-}
+        var knownCanonical = new HashSet<string>(profile.Artists.Select(static a => a.CanonicalName), StringComparer.OrdinalIgnoreCase);
+        var similarCacheDir = Path.Combine(cacheDir, "similar-artists");
+        Directory.CreateDirectory(similarCacheDir);
 
-// === Slice comparison: Last.fm vs YouTube ===
+        using var similarLookup = new ListenBrainzSimilarArtistsLookup();
+        var queriedCount = 0;
+        var cachedCount = 0;
 
-var lastFmStatsPath = FindByPattern(
-    Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-    "lastfmstats-*.csv",
-    Path.Combine(workspaceData, "lastfmstats"), Path.Combine(homeData, "lastfmstats"));
-
-if (lastFmStatsPath is not null && youTubeSnapshot is not null)
-{
-    Console.WriteLine();
-    Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
-    Console.WriteLine();
-
-    // Build Last.fm slice from full scrobble history
-    using var scrobbleReader = File.OpenText(lastFmStatsPath);
-    var scrobbles = LastFmStatsCsvReader.ParseCsv(scrobbleReader);
-    Console.WriteLine($"lastfm_full_history: {scrobbles.Count} scrobbles");
-
-    var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-    foreach (var scrobble in scrobbles)
-    {
-        // Pre-clean scrobble artist names: strip channel suffixes that YouTube
-        // scrobblers sometimes leave (e.g. "BelleSebastianVEVO" → "BelleSebastian")
-        var cleaned = ArtistNameMatcher.CleanChannelName(scrobble.ArtistName);
-        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
-        lastFmWeights.TryGetValue(canonical, out var current);
-        lastFmWeights[canonical] = current + 1;
-    }
-
-    // Merge Last.fm weight variants (e.g. "bellesebastian" from cleaned VEVO scrobbles
-    // should merge into "belle and sebastian" from normal scrobbles)
-    lastFmWeights = ArtistNameMatcher.MergeWeights(lastFmWeights);
-
-    var lastFmSlice = new BeatTrackSlice("Last.fm", lastFmWeights);
-
-    // Build matcher from cleaned Last.fm artist names for resolving YouTube channel names
-    var matcher = new ArtistNameMatcher(lastFmWeights.Keys);
-
-    // Build YouTube slice from music-candidate watch events
-    var ytWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-    var matcherResolutions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    foreach (var watch in youTubeSnapshot.WatchEvents)
-    {
-        if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
+        Console.Write("  loading similar artists: ");
+        foreach (var (mbid, name) in seedArtists)
         {
-            continue;
-        }
-
-        string? artistName = null;
-        if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
-        {
-            artistName = watch.MusicMatchReason["KnownArtist:".Length..];
-        }
-        else if (watch.MusicMatchReason is "AutoMusicChannel" && !string.IsNullOrWhiteSpace(watch.ChannelName))
-        {
-            artistName = watch.ChannelName;
-        }
-        else if (watch.MusicMatchReason is "MusicPlatform" or "StrongHeuristic" or "MediumHeuristic")
-        {
-            // Extract artist from "Artist - Track" title pattern on platform channels
-            var titleParts = watch.Title.Split([" - ", " – "], 2, StringSplitOptions.TrimEntries);
-            if (titleParts.Length == 2 && titleParts[0].Length >= 2)
+            var cacheFile = Path.Combine(similarCacheDir, $"{mbid}.md");
+            if (File.Exists(cacheFile))
             {
-                // Validate against known artists via matcher
-                var candidate = matcher.TryResolve(titleParts[0]);
-                if (candidate is not null)
+                var cached = LoadSimilarArtistsCache(cacheFile);
+                if (cached.Count > 0) { allSimilar[mbid] = cached; cachedCount++; continue; }
+            }
+
+            try
+            {
+                var similar = await similarLookup.GetSimilarArtistsAsync(mbid);
+                if (similar.Count > 0) { allSimilar[mbid] = [.. similar]; SaveSimilarArtistsCache(cacheFile, name, similar); }
+                queriedCount++;
+                Console.Write(".");
+            }
+            catch (HttpRequestException) { Console.Write("x"); }
+        }
+
+        Console.WriteLine($" ({cachedCount} cached, {queriedCount} queried)");
+
+        if (userSimilar.Count > 0)
+        {
+            var userSimilarCount = 0;
+            foreach (var artist in userSimilar.GetAllArtists())
+            {
+                var mbid = mbidCache.GetMbid(artist);
+                if (mbid is null) continue;
+                var similar = userSimilar.GetSimilar(artist);
+                foreach (var simName in similar)
                 {
-                    artistName = titleParts[0];
+                    var simMbid = mbidCache.GetMbid(simName);
+                    if (simMbid is null) continue;
+                    if (!allSimilar.TryGetValue(mbid, out var list)) { list = []; allSimilar[mbid] = list; }
+                    if (!list.Any(s => s.ArtistMbid.Equals(simMbid, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        list.Add(new SimilarArtist(simMbid, simName, 500, "user", mbid));
+                        userSimilarCount++;
+                    }
                 }
             }
+            if (userSimilarCount > 0) Console.WriteLine($"  merged {userSimilarCount} user-defined similarities into graph");
         }
 
-        if (artistName is not null)
+        var aggregatedMap = new Dictionary<string, (string Name, int TotalScore, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (seedMbid, similarList) in allSimilar)
         {
-            // Try to resolve to a known Last.fm artist name
-            var resolved = matcher.TryResolve(artistName);
-            if (resolved is not null)
+            var seedName = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
+            foreach (var artist in similarList)
             {
-                if (!matcherResolutions.ContainsKey(artistName))
-                {
-                    matcherResolutions[artistName] = resolved;
-                }
-
-                ytWeights.TryGetValue(resolved, out var current);
-                ytWeights[resolved] = current + 1;
-            }
-            else
-            {
-                var cleaned = ArtistNameMatcher.CleanChannelName(artistName);
-                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
-                ytWeights.TryGetValue(canonical, out var current);
-                ytWeights[canonical] = current + 1;
+                if (!aggregatedMap.TryGetValue(artist.ArtistMbid, out var entry)) { entry = (artist.Name, 0, []); aggregatedMap[artist.ArtistMbid] = entry; }
+                entry.Seeds.Add(seedName);
+                aggregatedMap[artist.ArtistMbid] = (entry.Name, entry.TotalScore + artist.Score, entry.Seeds);
             }
         }
+
+        var aggregated = aggregatedMap
+            .Where(kvp => !knownMbids.Contains(kvp.Key))
+            .Select(kvp => new AggregatedSimilarArtist(kvp.Key, kvp.Value.Name, kvp.Value.Seeds.Count, kvp.Value.TotalScore, kvp.Value.Seeds))
+            .OrderByDescending(static a => a.SeedCount).ThenByDescending(static a => a.TotalScore)
+            .ToList();
+
+        Console.WriteLine($"total_similar: {aggregatedMap.Count} artists found across {allSimilar.Count} seeds");
+
+        var gaps = aggregated
+            .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name)))
+            .Where(a => !knownMisses.Contains(a.Name))
+            .ToList();
+
+        Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
+        Console.WriteLine();
+
+        Console.WriteLine("top_gaps (similar to multiple favorites but never listened to):");
+        foreach (var gap in gaps.Take(30))
+        {
+            var seeds = string.Join(", ", gap.SimilarToSeeds.Take(5));
+            Console.WriteLine($"  {gap.Name}  (similar to {gap.SeedCount} seeds: {seeds})");
+        }
+        if (gaps.Count > 30) Console.WriteLine($"  ... and {gaps.Count - 30} more");
     }
 
-    var ytSlice = new BeatTrackSlice("YouTube", ytWeights);
+    // === Slice comparison: Last.fm vs YouTube ===
+    var lastFmStatsPath = FindByPattern(
+        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
+        "lastfmstats-*.csv",
+        Path.Combine(workspaceData, "lastfmstats"), Path.Combine(homeData, "lastfmstats"));
 
-    Console.WriteLine($"lastfm_slice: {lastFmSlice.ArtistWeights.Count} artists");
-    Console.WriteLine($"youtube_slice: {ytSlice.ArtistWeights.Count} artists");
-    Console.WriteLine($"matcher_resolutions: {matcherResolutions.Count}");
-    foreach (var (original, resolved) in matcherResolutions.OrderBy(static kvp => kvp.Value, StringComparer.OrdinalIgnoreCase))
+    if (lastFmStatsPath is not null && youTubeSnapshot is not null)
     {
-        Console.WriteLine($"  {original} -> {resolved}");
-    }
-    Console.WriteLine();
+        Console.WriteLine();
+        Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
+        Console.WriteLine();
 
-    var comparison = BeatTrackSliceComparer.Compare(lastFmSlice, ytSlice);
+        using var scrobbleReader = File.OpenText(lastFmStatsPath);
+        var scrobbles = LastFmStatsCsvReader.ParseCsv(scrobbleReader);
+        Console.WriteLine($"lastfm_full_history: {scrobbles.Count} scrobbles");
 
-    Console.WriteLine($"shared ({comparison.Shared.Count} artists):");
-    foreach (var artist in comparison.Shared.Take(40))
-    {
-        Console.WriteLine($"  {artist.CanonicalName}  (lastfm={artist.WeightA:N0}, youtube={artist.WeightB:N0})");
-    }
-
-    if (comparison.Shared.Count > 40)
-    {
-        Console.WriteLine($"  ... and {comparison.Shared.Count - 40} more");
-    }
-
-    Console.WriteLine();
-    Console.WriteLine($"lastfm_only ({comparison.OnlyA.Count} artists):");
-    foreach (var artist in comparison.OnlyA.Take(30))
-    {
-        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} scrobbles)");
-    }
-
-    if (comparison.OnlyA.Count > 30)
-    {
-        Console.WriteLine($"  ... and {comparison.OnlyA.Count - 30} more");
-    }
-
-    Console.WriteLine();
-    Console.WriteLine($"youtube_only ({comparison.OnlyB.Count} artists):");
-    foreach (var artist in comparison.OnlyB.Take(30))
-    {
-        Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} watches)");
-    }
-
-    if (comparison.OnlyB.Count > 30)
-    {
-        Console.WriteLine($"  ... and {comparison.OnlyB.Count - 30} more");
-    }
-
-    // === Time-windowed slices ===
-    // Build a combined (Last.fm + YouTube) slice for a given time window
-    BeatTrackSlice BuildCombinedSlice(int days, string label)
-    {
-        var cutoff = DateTimeOffset.UtcNow.AddDays(-days);
-        var cutoffMs = cutoff.ToUnixTimeMilliseconds();
-        var cutoffSec = cutoff.ToUnixTimeSeconds();
-
-        var weights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var scrobble in scrobbles.Where(s => s.TimestampMs >= cutoffMs))
+        var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var scrobble in scrobbles)
         {
             var cleaned = ArtistNameMatcher.CleanChannelName(scrobble.ArtistName);
             var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
-            var resolved = matcher.TryResolve(canonical) ?? canonical;
-            weights.TryGetValue(resolved, out var current);
-            weights[resolved] = current + 1;
+            lastFmWeights.TryGetValue(canonical, out var current);
+            lastFmWeights[canonical] = current + 1;
         }
 
+        lastFmWeights = ArtistNameMatcher.MergeWeights(lastFmWeights);
+        var lastFmSlice = new BeatTrackSlice("Last.fm", lastFmWeights);
+        var matcher = new ArtistNameMatcher(lastFmWeights.Keys);
+
+        var ytWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var matcherResolutions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var watch in youTubeSnapshot.WatchEvents)
         {
-            if (!watch.IsMusicCandidate || watch.MusicMatchReason is null)
-                continue;
-            if (watch.WatchedAtUnixTime is null || watch.WatchedAtUnixTime < cutoffSec)
-                continue;
+            if (!watch.IsMusicCandidate || watch.MusicMatchReason is null) continue;
 
             string? artistName = null;
             if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
@@ -811,8 +655,7 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
                 if (titleParts.Length == 2 && titleParts[0].Length >= 2)
                 {
                     var candidate = matcher.TryResolve(titleParts[0]);
-                    if (candidate is not null)
-                        artistName = titleParts[0];
+                    if (candidate is not null) artistName = titleParts[0];
                 }
             }
 
@@ -821,261 +664,244 @@ if (lastFmStatsPath is not null && youTubeSnapshot is not null)
                 var resolved = matcher.TryResolve(artistName);
                 if (resolved is not null)
                 {
-                    weights.TryGetValue(resolved, out var current);
-                    weights[resolved] = current + 1;
+                    matcherResolutions.TryAdd(artistName, resolved);
+                    ytWeights.TryGetValue(resolved, out var current);
+                    ytWeights[resolved] = current + 1;
                 }
                 else
                 {
                     var cleaned = ArtistNameMatcher.CleanChannelName(artistName);
                     var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
-                    weights.TryGetValue(canonical, out var current);
-                    weights[canonical] = current + 1;
+                    ytWeights.TryGetValue(canonical, out var current);
+                    ytWeights[canonical] = current + 1;
                 }
             }
         }
 
-        return new BeatTrackSlice(label, weights);
-    }
+        var ytSlice = new BeatTrackSlice("YouTube", ytWeights);
 
-    // 12-month bubble: Last.fm vs YouTube
-    var slice365 = BuildCombinedSlice(365, "All (365d)");
-    var slice60 = BuildCombinedSlice(60, "All (60d)");
+        Console.WriteLine($"lastfm_slice: {lastFmSlice.ArtistWeights.Count} artists");
+        Console.WriteLine($"youtube_slice: {ytSlice.ArtistWeights.Count} artists");
+        Console.WriteLine($"matcher_resolutions: {matcherResolutions.Count}");
+        foreach (var (original, resolved) in matcherResolutions.OrderBy(static kvp => kvp.Value, StringComparer.OrdinalIgnoreCase))
+            Console.WriteLine($"  {original} -> {resolved}");
+        Console.WriteLine();
 
-    Console.WriteLine();
-    Console.WriteLine($"=== Last 365 days: {slice365.ArtistWeights.Count} artists, {slice365.ArtistWeights.Values.Sum():N0} events ===");
-    Console.WriteLine($"=== Last 60 days: {slice60.ArtistWeights.Count} artists, {slice60.ArtistWeights.Values.Sum():N0} events ===");
+        var comparison = BeatTrackSliceComparer.Compare(lastFmSlice, ytSlice);
 
-    // New interests: in 60d but not in the prior 305d (365d minus 60d)
-    Console.WriteLine();
-    Console.WriteLine("=== New interests (in last 60d but not in prior 305d) ===");
-    Console.WriteLine();
+        Console.WriteLine($"shared ({comparison.Shared.Count} artists):");
+        foreach (var artist in comparison.Shared.Take(40))
+            Console.WriteLine($"  {artist.CanonicalName}  (lastfm={artist.WeightA:N0}, youtube={artist.WeightB:N0})");
+        if (comparison.Shared.Count > 40) Console.WriteLine($"  ... and {comparison.Shared.Count - 40} more");
 
-    var newInterests = slice60.ArtistWeights
-        .Where(kvp => !slice365.ArtistWeights.ContainsKey(kvp.Key)
-            || slice365.ArtistWeights[kvp.Key] == kvp.Value) // all activity is in the 60d window
-        .Where(kvp =>
+        Console.WriteLine();
+        Console.WriteLine($"lastfm_only ({comparison.OnlyA.Count} artists):");
+        foreach (var artist in comparison.OnlyA.Take(30))
+            Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} scrobbles)");
+        if (comparison.OnlyA.Count > 30) Console.WriteLine($"  ... and {comparison.OnlyA.Count - 30} more");
+
+        Console.WriteLine();
+        Console.WriteLine($"youtube_only ({comparison.OnlyB.Count} artists):");
+        foreach (var artist in comparison.OnlyB.Take(30))
+            Console.WriteLine($"  {artist.CanonicalName}  ({artist.Weight:N0} watches)");
+        if (comparison.OnlyB.Count > 30) Console.WriteLine($"  ... and {comparison.OnlyB.Count - 30} more");
+
+        // Time-windowed slices
+        BeatTrackSlice BuildCombinedSlice(int days, string label)
         {
-            // Check if the artist had ANY activity before the 60d window
-            if (!slice365.ArtistWeights.TryGetValue(kvp.Key, out var total365))
-                return true; // not in 365d at all — truly new
-            return total365 <= kvp.Value; // all plays are within 60d
-        })
-        .OrderByDescending(static kvp => kvp.Value)
-        .ToList();
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-days);
+            var cutoffMs = cutoff.ToUnixTimeMilliseconds();
+            var cutoffSec = cutoff.ToUnixTimeSeconds();
 
-    Console.WriteLine($"new_interests: {newInterests.Count} artists");
-    foreach (var (name, weight) in newInterests)
-    {
-        Console.WriteLine($"  {name}  ({weight:N0} plays in last 60d)");
-    }
-
-    // Surging: in both windows but disproportionately active recently
-    Console.WriteLine();
-    Console.WriteLine("=== Surging (much more active in last 60d vs prior 305d) ===");
-    Console.WriteLine();
-
-    var surging = slice60.ArtistWeights
-        .Where(kvp => slice365.ArtistWeights.TryGetValue(kvp.Key, out var total365)
-            && total365 > kvp.Value) // has prior activity
-        .Select(kvp =>
-        {
-            var recent = kvp.Value;
-            var total = slice365.ArtistWeights[kvp.Key];
-            var prior = total - recent;
-            // Ratio: recent plays per day vs prior plays per day
-            var recentRate = recent / 60.0;
-            var priorRate = prior / 305.0;
-            var surgeRatio = priorRate > 0 ? recentRate / priorRate : recent;
-            return (Name: kvp.Key, Recent: recent, Prior: prior, Total: total, SurgeRatio: surgeRatio);
-        })
-        .Where(static x => x.SurgeRatio > 2.0 && x.Recent >= 3) // at least 2x the rate and 3+ recent plays
-        .OrderByDescending(static x => x.SurgeRatio)
-        .ToList();
-
-    Console.WriteLine($"surging: {surging.Count} artists");
-    foreach (var s in surging.Take(30))
-    {
-        Console.WriteLine($"  {s.Name}  (60d={s.Recent:N0}, prior={s.Prior:N0}, surge={s.SurgeRatio:N1}x)");
-    }
-
-    // === Re-engagement: forgotten favorites in the same cluster as new interests ===
-    Console.WriteLine();
-    Console.WriteLine("=== Re-engage: forgotten favorites similar to your new interests ===");
-    Console.WriteLine();
-
-    // Build inverted index: similar artist MBID → list of seed names that consider it similar
-    var invertedSimilar = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-    foreach (var (seedMbid, similarList) in allSimilar)
-    {
-        var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-        foreach (var sim in similarList)
-        {
-            if (!invertedSimilar.TryGetValue(sim.ArtistMbid, out var seeds))
+            var weights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var scrobble in scrobbles.Where(s => s.TimestampMs >= cutoffMs))
             {
-                seeds = [];
-                invertedSimilar[sim.ArtistMbid] = seeds;
-            }
-            seeds.Add(seedName2);
-        }
-    }
-
-    // Also build: MBID → canonical name → list of seeds similar to that MBID
-    // This lets us look up by name when the new interest doesn't have an MBID
-    var mbidByCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    foreach (var entry in mbidCache.GetAll())
-    {
-        mbidByCanonical.TryAdd(entry.CanonicalName, entry.Mbid);
-    }
-
-    // Combine new interests + surging artists
-    var recentArtists = newInterests.Select(static kvp => (Name: kvp.Key, Weight: kvp.Value, Tag: "new"))
-        .Concat(surging.Select(static s => (Name: s.Name, Weight: s.Recent, Tag: "surging")))
-        .DistinctBy(static x => x.Name, StringComparer.OrdinalIgnoreCase)
-        .Where(static x => x.Weight >= 3)
-        .OrderByDescending(static x => x.Weight)
-        .ToList();
-
-    // Identify "dormant" favorites: in 365d but barely in 60d
-    var dormantFavorites = slice365.ArtistWeights
-        .Where(kvp => kvp.Value >= 10)
-        .Where(kvp =>
-        {
-            slice60.ArtistWeights.TryGetValue(kvp.Key, out var recent);
-            return recent < 2; // barely active recently
-        })
-        .ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value, StringComparer.OrdinalIgnoreCase);
-
-    foreach (var (name, weight, tag) in recentArtists)
-    {
-        // Try to find this artist's MBID
-        if (!mbidByCanonical.TryGetValue(name, out var artistMbid))
-        {
-            continue;
-        }
-
-        // Check inverted index: which seeds consider this artist similar?
-        if (!invertedSimilar.TryGetValue(artistMbid, out var clusterSeeds))
-        {
-            continue;
-        }
-
-        // Filter to dormant favorites, excluding known misses
-        var dormantInCluster = clusterSeeds
-            .Where(seedName2 =>
-            {
-                var seedCanonical = BeatTrackAnalysis.CanonicalizeArtistName(seedName2);
-                return dormantFavorites.ContainsKey(seedCanonical) && !knownMisses.Contains(seedName2);
-            })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(5)
-            .ToList();
-
-        if (dormantInCluster.Count == 0)
-        {
-            continue;
-        }
-
-        Console.WriteLine($"  {name} ({tag}, {weight:N0} plays) → revisit: {string.Join(", ", dormantInCluster)}");
-    }
-
-    // === Strange absences: artists similar to many active artists but completely missing ===
-    Console.WriteLine();
-    Console.WriteLine("=== Strange absences (similar to many of your active artists, but never listened to) ===");
-    Console.WriteLine();
-
-    // Get MBIDs for currently active artists (60d)
-    var active60dMbids = slice60.ArtistWeights.Keys
-        .Select(name => (Name: name, Mbid: mbidByCanonical.GetValueOrDefault(name)))
-        .Where(static x => x.Mbid is not null)
-        .ToList();
-
-    // For each active artist's MBID, gather their similar artists
-    var absenceCandidates = new Dictionary<string, (string Name, double Score, List<string> ActiveNeighbors)>(StringComparer.OrdinalIgnoreCase);
-
-    foreach (var (activeName, activeMbid) in active60dMbids)
-    {
-        if (activeMbid is null || !allSimilar.TryGetValue(activeMbid, out var similarList))
-        {
-            continue;
-        }
-
-        foreach (var sim in similarList)
-        {
-            // Skip if the artist is in ANY of our data
-            var simCanonical = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name);
-            if (slice365.ArtistWeights.ContainsKey(simCanonical))
-            {
-                continue;
+                var cleaned = ArtistNameMatcher.CleanChannelName(scrobble.ArtistName);
+                var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned);
+                var resolved = matcher.TryResolve(canonical) ?? canonical;
+                weights.TryGetValue(resolved, out var c); weights[resolved] = c + 1;
             }
 
-            if (knownMbids.Contains(sim.ArtistMbid))
+            foreach (var watch in youTubeSnapshot.WatchEvents)
             {
-                continue;
+                if (!watch.IsMusicCandidate || watch.MusicMatchReason is null) continue;
+                if (watch.WatchedAtUnixTime is null || watch.WatchedAtUnixTime < cutoffSec) continue;
+
+                string? an = null;
+                if (watch.MusicMatchReason.StartsWith("KnownArtist:", StringComparison.Ordinal))
+                    an = watch.MusicMatchReason["KnownArtist:".Length..];
+                else if (watch.MusicMatchReason is "AutoMusicChannel" && !string.IsNullOrWhiteSpace(watch.ChannelName))
+                    an = watch.ChannelName;
+                else if (watch.MusicMatchReason is "MusicPlatform" or "StrongHeuristic" or "MediumHeuristic")
+                {
+                    var tp = watch.Title.Split([" - ", " – "], 2, StringSplitOptions.TrimEntries);
+                    if (tp.Length == 2 && tp[0].Length >= 2 && matcher.TryResolve(tp[0]) is not null) an = tp[0];
+                }
+
+                if (an is not null)
+                {
+                    var resolved = matcher.TryResolve(an);
+                    if (resolved is not null) { weights.TryGetValue(resolved, out var c); weights[resolved] = c + 1; }
+                    else { var cleaned = ArtistNameMatcher.CleanChannelName(an); var canonical = BeatTrackAnalysis.CanonicalizeArtistName(cleaned); weights.TryGetValue(canonical, out var c); weights[canonical] = c + 1; }
+                }
             }
 
-            if (!absenceCandidates.TryGetValue(sim.ArtistMbid, out var entry))
+            return new BeatTrackSlice(label, weights);
+        }
+
+        var slice365 = BuildCombinedSlice(365, "All (365d)");
+        var slice60 = BuildCombinedSlice(60, "All (60d)");
+
+        Console.WriteLine();
+        Console.WriteLine($"=== Last 365 days: {slice365.ArtistWeights.Count} artists, {slice365.ArtistWeights.Values.Sum():N0} events ===");
+        Console.WriteLine($"=== Last 60 days: {slice60.ArtistWeights.Count} artists, {slice60.ArtistWeights.Values.Sum():N0} events ===");
+
+        Console.WriteLine();
+        Console.WriteLine("=== New interests (in last 60d but not in prior 305d) ===");
+        Console.WriteLine();
+
+        var newInterests = slice60.ArtistWeights
+            .Where(kvp => !slice365.ArtistWeights.ContainsKey(kvp.Key) || slice365.ArtistWeights[kvp.Key] == kvp.Value)
+            .Where(kvp => { if (!slice365.ArtistWeights.TryGetValue(kvp.Key, out var total365)) return true; return total365 <= kvp.Value; })
+            .OrderByDescending(static kvp => kvp.Value).ToList();
+
+        Console.WriteLine($"new_interests: {newInterests.Count} artists");
+        foreach (var (name, weight) in newInterests)
+            Console.WriteLine($"  {name}  ({weight:N0} plays in last 60d)");
+
+        Console.WriteLine();
+        Console.WriteLine("=== Surging (much more active in last 60d vs prior 305d) ===");
+        Console.WriteLine();
+
+        var surging = slice60.ArtistWeights
+            .Where(kvp => slice365.ArtistWeights.TryGetValue(kvp.Key, out var total365) && total365 > kvp.Value)
+            .Select(kvp => { var recent = kvp.Value; var total = slice365.ArtistWeights[kvp.Key]; var prior = total - recent; var recentRate = recent / 60.0; var priorRate = prior / 305.0; var surgeRatio = priorRate > 0 ? recentRate / priorRate : recent; return (Name: kvp.Key, Recent: recent, Prior: prior, Total: total, SurgeRatio: surgeRatio); })
+            .Where(static x => x.SurgeRatio > 2.0 && x.Recent >= 3)
+            .OrderByDescending(static x => x.SurgeRatio).ToList();
+
+        Console.WriteLine($"surging: {surging.Count} artists");
+        foreach (var s in surging.Take(30))
+            Console.WriteLine($"  {s.Name}  (60d={s.Recent:N0}, prior={s.Prior:N0}, surge={s.SurgeRatio:N1}x)");
+
+        // Re-engagement
+        Console.WriteLine();
+        Console.WriteLine("=== Re-engage: forgotten favorites similar to your new interests ===");
+        Console.WriteLine();
+
+        var invertedSimilar = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (seedMbid, similarList) in allSimilar)
+        {
+            var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
+            foreach (var sim in similarList)
             {
-                entry = (sim.Name, 0, []);
-                absenceCandidates[sim.ArtistMbid] = entry;
+                if (!invertedSimilar.TryGetValue(sim.ArtistMbid, out var seeds)) { seeds = []; invertedSimilar[sim.ArtistMbid] = seeds; }
+                seeds.Add(seedName2);
             }
+        }
 
-            entry.ActiveNeighbors.Add(activeName);
-            absenceCandidates[sim.ArtistMbid] = (entry.Name, entry.Score + sim.Score, entry.ActiveNeighbors);
+        var mbidByCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in mbidCache.GetAll()) mbidByCanonical.TryAdd(entry.CanonicalName, entry.Mbid);
+
+        var recentArtists = newInterests.Select(static kvp => (Name: kvp.Key, Weight: kvp.Value, Tag: "new"))
+            .Concat(surging.Select(static s => (Name: s.Name, Weight: s.Recent, Tag: "surging")))
+            .DistinctBy(static x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(static x => x.Weight >= 3)
+            .OrderByDescending(static x => x.Weight).ToList();
+
+        var dormantFavorites = slice365.ArtistWeights
+            .Where(kvp => kvp.Value >= 10)
+            .Where(kvp => { slice60.ArtistWeights.TryGetValue(kvp.Key, out var recent); return recent < 2; })
+            .ToDictionary(static kvp => kvp.Key, static kvp => kvp.Value, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (name, weight, tag) in recentArtists)
+        {
+            if (!mbidByCanonical.TryGetValue(name, out var artistMbid)) continue;
+            if (!invertedSimilar.TryGetValue(artistMbid, out var clusterSeeds)) continue;
+            var dormantInCluster = clusterSeeds
+                .Where(sn => { var sc = BeatTrackAnalysis.CanonicalizeArtistName(sn); return dormantFavorites.ContainsKey(sc) && !knownMisses.Contains(sn); })
+                .Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
+            if (dormantInCluster.Count == 0) continue;
+            Console.WriteLine($"  {name} ({tag}, {weight:N0} plays) → revisit: {string.Join(", ", dormantInCluster)}");
+        }
+
+        // Strange absences
+        Console.WriteLine();
+        Console.WriteLine("=== Strange absences (similar to many of your active artists, but never listened to) ===");
+        Console.WriteLine();
+
+        var active60dMbids = slice60.ArtistWeights.Keys
+            .Select(n => (Name: n, Mbid: mbidByCanonical.GetValueOrDefault(n)))
+            .Where(static x => x.Mbid is not null).ToList();
+
+        var absenceCandidates = new Dictionary<string, (string Name, double Score, List<string> ActiveNeighbors)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (activeName, activeMbid) in active60dMbids)
+        {
+            if (activeMbid is null || !allSimilar.TryGetValue(activeMbid, out var similarList)) continue;
+            foreach (var sim in similarList)
+            {
+                var simCanonical = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name);
+                if (slice365.ArtistWeights.ContainsKey(simCanonical)) continue;
+                if (knownMbids.Contains(sim.ArtistMbid)) continue;
+                if (!absenceCandidates.TryGetValue(sim.ArtistMbid, out var entry)) { entry = (sim.Name, 0, []); absenceCandidates[sim.ArtistMbid] = entry; }
+                entry.ActiveNeighbors.Add(activeName);
+                absenceCandidates[sim.ArtistMbid] = (entry.Name, entry.Score + sim.Score, entry.ActiveNeighbors);
+            }
+        }
+
+        var strangeAbsences = absenceCandidates.Values
+            .Where(static x => x.ActiveNeighbors.Count >= 3)
+            .Where(x => !knownMisses.Contains(x.Name))
+            .OrderByDescending(static x => x.ActiveNeighbors.Count).ThenByDescending(static x => x.Score).ToList();
+
+        Console.WriteLine($"strange_absences: {strangeAbsences.Count} artists");
+        foreach (var absence in strangeAbsences.Take(30))
+        {
+            var neighbors = string.Join(", ", absence.ActiveNeighbors.Distinct(StringComparer.OrdinalIgnoreCase).Take(5));
+            Console.WriteLine($"  {absence.Name}  (neighbors: {absence.ActiveNeighbors.Distinct(StringComparer.OrdinalIgnoreCase).Count()} active artists — {neighbors})");
+        }
+        if (strangeAbsences.Count > 30) Console.WriteLine($"  ... and {strangeAbsences.Count - 30} more");
+
+        Console.WriteLine();
+        Console.WriteLine("dormant favorites you might revisit:");
+        var suggestedDormant = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (seedMbid, similarList) in allSimilar)
+        {
+            var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
+            var seedCanonical = BeatTrackAnalysis.CanonicalizeArtistName(seedName2);
+            if (!dormantFavorites.ContainsKey(seedCanonical)) continue;
+            var overlapCount = similarList.Count(sim => { var sc = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name); return slice60.ArtistWeights.ContainsKey(sc); });
+            if (overlapCount >= 3 && !knownMisses.Contains(seedName2) && suggestedDormant.Add(seedCanonical))
+            {
+                var overlapping = similarList.Where(sim => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(sim.Name))).Select(static sim => sim.Name).Take(5);
+                Console.WriteLine($"  {seedName2} ({dormantFavorites[seedCanonical]:N0} plays in 365d) — you're currently into: {string.Join(", ", overlapping)}");
+            }
         }
     }
 
-    var strangeAbsences = absenceCandidates.Values
-        .Where(static x => x.ActiveNeighbors.Count >= 3) // similar to at least 3 currently-active artists
-        .Where(x => !knownMisses.Contains(x.Name))
-        .OrderByDescending(static x => x.ActiveNeighbors.Count)
-        .ThenByDescending(static x => x.Score)
-        .ToList();
-
-    Console.WriteLine($"strange_absences: {strangeAbsences.Count} artists");
-    foreach (var absence in strangeAbsences.Take(30))
-    {
-        var neighbors = string.Join(", ", absence.ActiveNeighbors.Distinct(StringComparer.OrdinalIgnoreCase).Take(5));
-        Console.WriteLine($"  {absence.Name}  (neighbors: {absence.ActiveNeighbors.Distinct(StringComparer.OrdinalIgnoreCase).Count()} active artists — {neighbors})");
-    }
-    if (strangeAbsences.Count > 30)
-        Console.WriteLine($"  ... and {strangeAbsences.Count - 30} more");
-
-    // Also check: for each seed, which of its similar artists are in our new interests?
-    // This catches new interests that don't have MBIDs yet.
-    Console.WriteLine();
-    Console.WriteLine("dormant favorites you might revisit:");
-    var suggestedDormant = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    foreach (var (seedMbid, similarList) in allSimilar)
-    {
-        var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-        var seedCanonical = BeatTrackAnalysis.CanonicalizeArtistName(seedName2);
-
-        if (!dormantFavorites.ContainsKey(seedCanonical))
-        {
-            continue;
-        }
-
-        // How many of this seed's similar artists overlap with recent interests?
-        var overlapCount = similarList.Count(sim =>
-        {
-            var simCanonical = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name);
-            return slice60.ArtistWeights.ContainsKey(simCanonical);
-        });
-
-        if (overlapCount >= 3 && !knownMisses.Contains(seedName2) && suggestedDormant.Add(seedCanonical))
-        {
-            var overlapping = similarList
-                .Where(sim => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(sim.Name)))
-                .Select(static sim => sim.Name)
-                .Take(5);
-            Console.WriteLine($"  {seedName2} ({dormantFavorites[seedCanonical]:N0} plays in 365d) — you're currently into: {string.Join(", ", overlapping)}");
-        }
-    }
+    return 0;
 }
 
-return 0;
+// --- Helpers ---
 
-// --- Known misses command ---
+static string? FindByPattern(string? envOverride, string pattern, params string[] searchDirs)
+{
+    if (envOverride is not null && File.Exists(envOverride)) return envOverride;
+    foreach (var dir in searchDirs)
+    {
+        if (!Directory.Exists(dir)) continue;
+        var match = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
+        if (match is not null) return match;
+    }
+    return null;
+}
+
+static string? FindDir(string? envOverride, params string[] searchPaths)
+{
+    if (envOverride is not null && Directory.Exists(envOverride)) return envOverride;
+    foreach (var path in searchPaths)
+        if (Directory.Exists(path)) return path;
+    return null;
+}
 
 static int HandleMissCommand(string filePath, string[] args)
 {
@@ -1083,21 +909,14 @@ static int HandleMissCommand(string filePath, string[] args)
 
     if (args.Length == 0)
     {
-        // List all known misses
         var all = misses.GetAll();
-        if (all.Count == 0)
-        {
-            Console.WriteLine("No known misses. Use 'miss add \"Artist Name\"' to add one.");
-            return 0;
-        }
-
+        if (all.Count == 0) { Console.WriteLine("No known misses. Use 'beat-track miss add \"Artist Name\"' to add one."); return 0; }
         Console.WriteLine($"known_misses ({all.Count}):");
         foreach (var (_, displayName, reason, dateAdded) in all)
         {
             var reasonText = reason is not null ? $" — {reason}" : "";
             Console.WriteLine($"  {displayName} (added {dateAdded}){reasonText}");
         }
-
         return 0;
     }
 
@@ -1106,53 +925,25 @@ static int HandleMissCommand(string filePath, string[] args)
     {
         case "add":
         {
-            if (args.Length < 2)
-            {
-                Console.Error.WriteLine("Usage: miss add \"Artist Name\" [--reason \"doesn't grab me\"]");
-                return 1;
-            }
-
+            if (args.Length < 2) { Console.Error.WriteLine("Usage: miss add \"Artist Name\" [--reason \"doesn't grab me\"]"); return 1; }
             var artistName = args[1];
             string? reason = null;
             for (var i = 2; i < args.Length - 1; i++)
-            {
-                if (string.Equals(args[i], "--reason", StringComparison.OrdinalIgnoreCase))
-                {
-                    reason = args[i + 1];
-                    break;
-                }
-            }
-
+                if (string.Equals(args[i], "--reason", StringComparison.OrdinalIgnoreCase)) { reason = args[i + 1]; break; }
             misses.Add(artistName, reason);
             misses.Save();
             Console.WriteLine($"Added '{artistName}' to known misses.");
             return 0;
         }
-
         case "remove":
         {
-            if (args.Length < 2)
-            {
-                Console.Error.WriteLine("Usage: miss remove \"Artist Name\"");
-                return 1;
-            }
-
-            if (misses.Remove(args[1]))
-            {
-                misses.Save();
-                Console.WriteLine($"Removed '{args[1]}' from known misses.");
-            }
-            else
-            {
-                Console.WriteLine($"'{args[1]}' not found in known misses.");
-            }
-
+            if (args.Length < 2) { Console.Error.WriteLine("Usage: miss remove \"Artist Name\""); return 1; }
+            if (misses.Remove(args[1])) { misses.Save(); Console.WriteLine($"Removed '{args[1]}' from known misses."); }
+            else Console.WriteLine($"'{args[1]}' not found in known misses.");
             return 0;
         }
-
         default:
         {
-            // Treat bare argument as "miss add"
             misses.Add(subCommand, null);
             misses.Save();
             Console.WriteLine($"Added '{subCommand}' to known misses.");
@@ -1160,8 +951,6 @@ static int HandleMissCommand(string filePath, string[] args)
         }
     }
 }
-
-// --- Helper methods for similar artist caching ---
 
 static List<SimilarArtist> LoadSimilarArtistsCache(string filePath)
 {

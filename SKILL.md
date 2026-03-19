@@ -23,6 +23,12 @@ description: Analyze music listening data across Last.fm, YouTube, and Discogs. 
 
 All commands: `beat-track COMMAND [OPTIONS]`
 
+Run `beat-track` with no arguments to see all available commands.
+
+## Output Format
+
+All commands produce structured markdown: `#` title, inline summary fields, and `##` sections with pipe tables. This format is both human-readable and machine-parseable. No imperative/ad-hoc formatting — every command renders through a view model.
+
 ---
 
 ## Workflow 1: Establishing the Environment
@@ -36,7 +42,7 @@ On first use, find out what the user has available. Ask them:
 Then check what's already configured:
 
 ```bash
-beat-trackstatus
+beat-track status
 ```
 
 ### Setting up the API key
@@ -75,10 +81,10 @@ With an API key configured, fetch the user's complete history:
 
 ```bash
 # Download full scrobble history (~1 min for 60k scrobbles)
-beat-trackhistory
+beat-track history
 
 # Fetch a snapshot (top artists by period, loved tracks, MBIDs)
-beat-tracksnapshot
+beat-track snapshot
 ```
 
 `history` produces a CSV at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` that all queries read from. `snapshot` produces a JSON file that enables gap analysis and similarity lookups.
@@ -128,10 +134,10 @@ These require a scrobble CSV + snapshot. May call ListenBrainz/MusicBrainz APIs 
 ### Full analysis
 
 ```bash
-beat-track
+beat-track analyze
 ```
 
-Runs everything (no args): profile, gaps, slices, new interests, surging, re-engagement, strange absences.
+Runs everything: profile, gaps, slices, new interests, surging, re-engagement, strange absences.
 
 | User prompt | What to look at |
 | --- | --- |
@@ -187,10 +193,10 @@ The **catalog dig** is the highest-value recommendation. Use `artist-depth --mod
 
 ```bash
 # Re-download full history (overwrites existing CSV)
-beat-trackhistory
+beat-track history
 
 # Refresh snapshot (top artists, loved tracks, MBIDs)
-beat-tracksnapshot
+beat-track snapshot
 ```
 
 ### Refreshing supplementary sources
@@ -215,20 +221,20 @@ They'll rebuild on the next full analysis run.
 1. `momentum` — what's heating up, on repeat, new, and coming back
 2. `live -n 10` — see what's playing / recently played
 3. `top-artists --window 7d` — current rotation
-4. Use full analysis `Strange absences` for targeted recommendations
+4. `beat-track analyze` then check `Strange absences` for targeted recommendations
 
 ### "Build me a playlist"
 
 1. `top-artists --window 7d` + `top-artists --window 30d` — current rotation
 2. `artist-depth --mode deep --limit 10` — true love artists
 3. `new-discoveries --window 30d` — first clicks, rediscoveries, surging
-4. Run full analysis for re-engagement and strange absence picks
+4. `beat-track analyze` for re-engagement and strange absence picks
 5. Mix: 40% current favorites, 30% re-engagement, 30% discovery
 
 ### "I want to discover new music"
 
-1. Run full analysis → `Gap analysis` section (similar to favorites, never heard)
-2. `Strange absences` (similar to many active artists, completely absent)
+1. `beat-track analyze` → `Gap analysis` section (similar to favorites, never heard)
+2. Check `Strange absences` section (similar to many active artists, completely absent)
 3. `artist-depth --mode shallow` — find covers/remixes that point to new artists
 4. Validate every recommendation against scrobble data before presenting
 

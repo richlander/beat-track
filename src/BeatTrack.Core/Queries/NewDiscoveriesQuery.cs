@@ -1,3 +1,6 @@
+using BeatTrack.Core.Views;
+using Markout;
+
 namespace BeatTrack.Core.Queries;
 
 /// <summary>
@@ -74,56 +77,71 @@ public static class NewDiscoveriesQuery
             .OrderBy(static g => g.Key)
             .ToList();
 
-        // Summary line
-        var counts = grouped.Select(g => $"{CategoryLabel(g.Key)}: {g.Count()}");
-        Console.WriteLine($"engagement ({window}, {classified.Count} active artists): {string.Join(", ", counts)}");
-        Console.WriteLine();
+        // --- Build view model ---
+        var view = new NewDiscoveriesView
+        {
+            Title = "Engagement (30d)",
+            ActiveArtists = classified.Count,
+            Window = window,
+        };
 
         foreach (var group in grouped)
         {
-            Console.WriteLine($"  {CategoryLabel(group.Key)}:");
-
-            foreach (var a in group.Take(limit))
+            switch (group.Key)
             {
-                var detail = group.Key switch
-                {
-                    EngagementCategory.NewDiscovery =>
-                        $"{a.RecentCount:N0} plays, discovered {FormatDate(a.FirstScrobble)}",
+                case EngagementCategory.NewDiscovery:
+                    view.NewDiscoveries = group.Take(limit).Select(a => new NewDiscoveryRow
+                    {
+                        Artist = a.Name,
+                        Plays = a.RecentCount,
+                        Discovered = FormatDate(a.FirstScrobble),
+                    }).ToList();
+                    break;
 
-                    EngagementCategory.FirstClick =>
-                        $"{a.RecentCount:N0} plays now, {a.PriorPlays} prior play{(a.PriorPlays == 1 ? "" : "s")}, first heard {FormatDate(a.FirstScrobble)}",
+                case EngagementCategory.FirstClick:
+                    view.FirstClicks = group.Take(limit).Select(a => new FirstClickRow
+                    {
+                        Artist = a.Name,
+                        RecentPlays = a.RecentCount,
+                        PriorPlays = a.PriorPlays,
+                        FirstHeard = FormatDate(a.FirstScrobble),
+                    }).ToList();
+                    break;
 
-                    EngagementCategory.Rediscovery =>
-                        $"{a.RecentCount:N0} plays now, {a.PriorPlays:N0} prior, absent {FormatGap(cutoffMs - a.LastPriorMs)}",
+                case EngagementCategory.Rediscovery:
+                    view.Rediscoveries = group.Take(limit).Select(a => new RediscoveryRow
+                    {
+                        Artist = a.Name,
+                        RecentPlays = a.RecentCount,
+                        PriorPlays = a.PriorPlays,
+                        Absent = FormatGap(cutoffMs - a.LastPriorMs),
+                    }).ToList();
+                    break;
 
-                    EngagementCategory.LongtimeFan =>
-                        $"{a.RecentCount:N0} recent, {a.TotalCount:N0} total",
-
-                    _ => $"{a.RecentCount:N0} plays",
-                };
-
-                Console.WriteLine($"    {a.Name}  ({detail})");
+                case EngagementCategory.LongtimeFan:
+                    view.LongtimeFans = group.Take(limit).Select(a => new LongtimeFanRow
+                    {
+                        Artist = a.Name,
+                        Recent = a.RecentCount,
+                        Total = a.TotalCount,
+                    }).ToList();
+                    break;
             }
-
-            if (group.Count() > limit)
-            {
-                Console.WriteLine($"    ... and {group.Count() - limit} more");
-            }
-
-            Console.WriteLine();
         }
+
+        // Build summary line
+        var parts = new List<string>();
+        if (view.NewDiscoveries is { Count: > 0 }) parts.Add($"{view.NewDiscoveries.Count} new discovery");
+        if (view.FirstClicks is { Count: > 0 }) parts.Add($"{view.FirstClicks.Count} first click");
+        if (view.Rediscoveries is { Count: > 0 }) parts.Add($"{view.Rediscoveries.Count} rediscovery");
+        if (view.LongtimeFans is { Count: > 0 }) parts.Add($"{view.LongtimeFans.Count} longtime fan");
+        view.Summary = parts.Count > 0 ? string.Join(" | ", parts) : "No engagement categories detected.";
+
+        // Serialize
+        MarkoutSerializer.Serialize(view, Console.Out, BeatTrackMarkoutContext.Default);
 
         return 0;
     }
-
-    private static string CategoryLabel(EngagementCategory category) => category switch
-    {
-        EngagementCategory.NewDiscovery => "new discovery",
-        EngagementCategory.FirstClick => "first click",
-        EngagementCategory.Rediscovery => "rediscovery",
-        EngagementCategory.LongtimeFan => "longtime fan",
-        _ => "unknown",
-    };
 
     private static string FormatDate(long timestampMs) =>
         DateTimeOffset.FromUnixTimeMilliseconds(timestampMs).ToLocalTime().ToString("yyyy-MM-dd");
