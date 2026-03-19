@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $Feed = if ($env:BEAT_TRACK_FEED) { $env:BEAT_TRACK_FEED } else { 'https://github.com/richlander/beat-track/releases/download' }
 $InstallDir = if ($env:BEAT_TRACK_INSTALL_DIR) { $env:BEAT_TRACK_INSTALL_DIR } else { Join-Path $HOME '.local' 'bin' }
 
-$Version = '0.1.0'
+$Version = '0.1.1'
 $Rid = 'win-x64'
 
 $Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
