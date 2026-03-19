@@ -8,6 +8,7 @@ namespace BeatTrack.Core.Views;
 [MarkoutContext(typeof(OnRepeatRow))]
 [MarkoutContext(typeof(NewToYouRow))]
 [MarkoutContext(typeof(ComebackRow))]
+[MarkoutContext(typeof(SteadyRotationRow))]
 [MarkoutContext(typeof(CoolingOffRow))]
 // TopArtists
 [MarkoutContext(typeof(TopArtistsView))]

@@ -186,12 +186,42 @@ public static class MomentumQuery
 
         if (coolingOff.Count > 0) view.CoolingOff = coolingOff;
 
+        // Steady rotation: meaningful plays this period, but not captured by any change-based category
+        var categorized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (view.HeatingUp is not null)
+            foreach (var a in view.HeatingUp) categorized.Add(BeatTrackAnalysis.CanonicalizeArtistName(a.Name));
+        if (view.NewToYou is not null)
+            foreach (var a in view.NewToYou) categorized.Add(BeatTrackAnalysis.CanonicalizeArtistName(a.Artist));
+        if (view.Comeback is not null)
+            foreach (var a in view.Comeback) categorized.Add(BeatTrackAnalysis.CanonicalizeArtistName(a.Artist));
+
+        var steadyRotation = recentArtists
+            .Where(r => !categorized.Contains(r.Key) && r.Value.Count >= 5)
+            .Select(r =>
+            {
+                allTimeArtists.TryGetValue(r.Key, out var allTime);
+                depthLookup.TryGetValue(r.Key, out var depth);
+                return new SteadyRotationRow
+                {
+                    Artist = r.Value.DisplayName,
+                    Plays = r.Value.Count,
+                    TotalPlays = allTime?.Count ?? r.Value.Count,
+                    Depth = depth > 15 ? $"{depth} tracks" : depth > 0 ? $"{depth} tracks" : null,
+                };
+            })
+            .OrderByDescending(static a => a.Plays)
+            .Take(limit)
+            .ToList();
+
+        if (steadyRotation.Count > 0) view.SteadyRotation = steadyRotation;
+
         // Build summary line
         var parts = new List<string>();
         if (view.HeatingUp is { Count: > 0 }) parts.Add($"{view.HeatingUp.Count} heating up");
         if (view.OnRepeat is { Count: > 0 }) parts.Add($"{view.OnRepeat.Count} on repeat");
         if (view.NewToYou is { Count: > 0 }) parts.Add($"{view.NewToYou.Count} new");
         if (view.Comeback is { Count: > 0 }) parts.Add($"{view.Comeback.Count} comeback");
+        if (view.SteadyRotation is { Count: > 0 }) parts.Add($"{view.SteadyRotation.Count} steady");
         if (view.CoolingOff is { Count: > 0 }) parts.Add($"{view.CoolingOff.Count} cooling off");
         view.Summary = parts.Count > 0 ? string.Join(" | ", parts) : "Steady state — no significant momentum shifts detected.";
 
