@@ -29,6 +29,10 @@ public class MomentumView
     [MarkoutMaxItems(10)]
     public List<ComebackRow>? Comeback { get; set; }
 
+    [MarkoutSection(Name = "Steady Rotation")]
+    [MarkoutMaxItems(10)]
+    public List<SteadyRotationRow>? SteadyRotation { get; set; }
+
     [MarkoutSection(Name = "Cooling Off")]
     [MarkoutMaxItems(10)]
     public List<CoolingOffRow>? CoolingOff { get; set; }
@@ -81,6 +85,23 @@ public record ComebackRow
 
     [MarkoutPropertyName("Prior Plays")]
     public int PriorPlays { get; init; }
+}
+
+[MarkoutSerializable]
+public record SteadyRotationRow
+{
+    public string Artist { get; init; } = "";
+
+    [MarkoutDisplayFormat("{0:N0}")]
+    public int Plays { get; init; }
+
+    [MarkoutPropertyName("All Time")]
+    [MarkoutDisplayFormat("{0:N0}")]
+    public int TotalPlays { get; init; }
+
+    [MarkoutPropertyName("Catalog")]
+    [MarkoutSkipNull]
+    public string? Depth { get; init; }
 }
 
 [MarkoutSerializable]

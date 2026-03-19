@@ -31,75 +31,101 @@ All commands produce structured markdown: `#` title, inline summary fields, and 
 
 ---
 
-## Workflow 1: Establishing the Environment
+## Workflow 1: First-Run Setup
 
-On first use, find out what the user has available. Ask them:
-
-1. **Do you have a Last.fm account?** If yes, what's your username?
-2. **Do you have a Last.fm API key?** (Get one at https://www.last.fm/api/accounts — it's free and instant.)
-3. **Do you have any other music data?** Discogs collection export, YouTube/Google Takeout, etc.
-
-Then check what's already configured:
+### Step 1: Check what's already configured
 
 ```bash
 beat-track status
 ```
 
-### Setting up the API key
+This shows config, data sources (with file ages), and actionable suggestions. Start here every time — it tells you exactly what's missing.
 
-This is the fastest path to a working system. With just an API key and username, you can fetch the user's complete listening history — no manual exports needed.
+### Step 2: Set up Last.fm API access
 
-Write `~/.config/beat-track/config`:
+This is the only required step. With an API key and username, beat-track can fetch your complete listening history automatically.
+
+1. Get a free API key at https://www.last.fm/api/accounts (instant, no approval)
+2. Write `~/.config/beat-track/config`:
+
 ```
 lastfm_api_key=YOUR_KEY
 lastfm_user=YOUR_USERNAME
 ```
 
-### Adding supplementary data sources
+### Step 3: Download your data
 
-These are optional and enrich cross-source analysis:
+```bash
+beat-track history     # full scrobble history (~1 min for 60k scrobbles)
+beat-track snapshot    # top artists by period, loved tracks, MBIDs
+```
 
-| Source | What it provides | Where to place it |
+After this, all baseline queries work: `momentum`, `top-artists`, `stats`, `new-discoveries`, `streaks`, `artist-depth`.
+
+The `analyze` command additionally needs the snapshot for gap analysis and similarity lookups.
+
+### Optional: supplementary sources
+
+These enrich cross-source analysis but are not required:
+
+| Source | What it adds | Where to place it |
 | --- | --- | --- |
-| Discogs collection | Physical media ownership | `~/.local/share/beat-track/collection-csv/` |
-| YouTube Takeout | Video listening data | `~/.local/share/beat-track/takeout/extracted/Takeout/` |
-
-### Data the app manages
-
-These grow over time and don't require user action:
-- **Spoken data**: `my-favorites.md`, `known-misses.md`, `my-similar-artists.md` in `~/.local/share/beat-track/`
-- **Snapshots**: `{username}-snapshot.json` in DataDir (fetched via `snapshot` command)
-- **Caches**: MBID mappings and similar artist data in `~/.cache/beat-track/` (regenerable — safe to delete)
+| Discogs collection CSV | Physical media ownership | `~/.local/share/beat-track/collection-csv/` |
+| YouTube/Google Takeout | Video listening data | `~/.local/share/beat-track/takeout/extracted/Takeout/` |
 
 ---
 
-## Workflow 2: Acquiring Listening Data
+## Workflow 2: Data Freshness
 
-### From the Last.fm API (recommended)
+### What "recent enough" means
 
-With an API key configured, fetch the user's complete history:
+| Data source | What reads it | Freshness target | How to refresh |
+| --- | --- | --- | --- |
+| **Scrobble CSV** | All baseline queries | Re-download before any "this week" analysis | `beat-track history` |
+| **Snapshot JSON** | `analyze` (gap analysis, similarity) | Weekly or before deep analysis runs | `beat-track snapshot` |
+| **Discogs CSV** | `analyze` (cross-source) | When collection changes | Re-export from Discogs |
+| **YouTube Takeout** | `analyze` (cross-source) | Rarely changes | Re-download from Google Takeout |
+| **Caches** (MBID, similar artists) | `analyze` | Regenerable, safe to delete | `rm -rf ~/.cache/beat-track/` |
+| **Spoken data** (favorites, misses) | `analyze` (recommendations) | Accumulates over time | Agent writes these during conversations |
+
+### Before a "what's happening now" session
 
 ```bash
-# Download full scrobble history (~1 min for 60k scrobbles)
-beat-track history
-
-# Fetch a snapshot (top artists by period, loved tracks, MBIDs)
-beat-track snapshot
+beat-track history     # refresh scrobbles (captures today's plays)
+beat-track momentum    # now this reflects the latest data
 ```
 
-`history` produces a CSV at `~/.local/share/beat-track/lastfmstats/lastfmstats-USERNAME.csv` that all queries read from. `snapshot` produces a JSON file that enables gap analysis and similarity lookups.
+### Before a deep analysis session
 
-### From spoken data
+```bash
+beat-track history     # refresh scrobbles
+beat-track snapshot    # refresh top artists and loved tracks
+beat-track analyze     # full cross-source analysis with fresh data
+```
+
+### How to check staleness
+
+`beat-track status` shows file ages (e.g., "yesterday", "3 days ago", "2 months ago"). If the scrobble CSV is more than a day old, refresh before running time-windowed queries.
+
+### Config precedence
+
+1. Environment variables (`LASTFM_API_KEY`, `LASTFM_USER`, `BEAT_TRACK_DATA_DIR`, etc.)
+2. Config file (`~/.config/beat-track/config`)
+3. XDG defaults (`~/.local/share/beat-track/`, `~/.cache/beat-track/`)
+
+---
+
+## Workflow 3: Recording User Preferences
 
 Users can declare preferences directly — these feed into recommendations even without listening history:
 
 | User says | Action |
 | --- | --- |
 | "I love Slowdive" | Add to `~/.local/share/beat-track/my-favorites.md` |
-| "I tried Johnny Marr, not for me" | `miss add "Johnny Marr" --reason "doesn't grab me"` |
+| "I tried Johnny Marr, not for me" | `beat-track miss add "Johnny Marr" --reason "doesn't grab me"` |
 | "Slowdive sounds like My Bloody Valentine" | Add to `~/.local/share/beat-track/my-similar-artists.md` |
-| "Actually, give Johnny Marr another chance" | `miss remove "Johnny Marr"` |
-| "Show my known misses" | `miss` |
+| "Actually, give Johnny Marr another chance" | `beat-track miss remove "Johnny Marr"` |
+| "Show my known misses" | `beat-track miss` |
 
 Favorites and similarity entries are hand-edited markdown tables. Known misses have CLI commands for add/remove.
 
@@ -107,14 +133,14 @@ These are automatically used in analysis: favorites seed gap analysis, misses ar
 
 ---
 
-## Workflow 3: Baseline Reports
+## Workflow 4: Baseline Reports
 
 These require a scrobble CSV (from `history` or manual import). They're fast and don't call any APIs.
 
 | User prompt | Command | What it shows |
 | --- | --- | --- |
 | "What are my listening stats?" | `stats` | Eddington number, total artists, span, one-hit-wonders, busiest periods |
-| "What's my momentum this week?" | `momentum` | Heating up, on repeat, new to you, comebacks, cooling off |
+| "What's my momentum this week?" | `momentum` | Heating up, on repeat, new to you, comebacks, steady rotation, cooling off |
 | "What changed this month?" | `momentum --window 30d` | Same momentum report over a 30-day window |
 | "What am I listening to this week?" | `top-artists --window 7d` | Top artists by play count in last 7 days |
 | "What are my top artists this year?" | `top-artists --window 365d` | Top artists by play count in last year |
@@ -127,7 +153,7 @@ These require a scrobble CSV (from `history` or manual import). They're fast and
 
 ---
 
-## Workflow 4: Advanced Reports and Queries
+## Workflow 5: Advanced Reports and Queries
 
 These require a scrobble CSV + snapshot. May call ListenBrainz/MusicBrainz APIs on first run (results are cached).
 
@@ -184,33 +210,6 @@ grep -i "artist name" ~/.local/share/beat-track/lastfmstats/lastfmstats-*.csv 2>
 | **Hundreds of plays, broad catalog** | Already a fan — use as taste anchor, don't recommend |
 
 The **catalog dig** is the highest-value recommendation. Use `artist-depth --mode all` to find artists where `TopTrackShare` is high or `Albums` is low relative to their discography.
-
----
-
-## Workflow 5: Updating Listening Data
-
-### Refreshing from the API
-
-```bash
-# Re-download full history (overwrites existing CSV)
-beat-track history
-
-# Refresh snapshot (top artists, loved tracks, MBIDs)
-beat-track snapshot
-```
-
-### Refreshing supplementary sources
-
-- **Discogs**: Re-export CSV from Discogs if collection changed
-- **YouTube**: Re-download Google Takeout if needed
-
-### Cache management
-
-Caches grow incrementally and are safe to delete:
-```bash
-rm -rf ~/.cache/beat-track/
-```
-They'll rebuild on the next full analysis run.
 
 ---
 
