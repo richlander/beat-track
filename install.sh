@@ -27,7 +27,7 @@ main() {
     local _rid="$RETVAL"
     assert_nz "$_rid" "rid"
 
-    local _version="0.1.1"
+    local _version="0.1.2"
     local _url="${FEED}/v${_version}/beat-track-${_version}-${_rid}.tar.gz"
 
     local _dir

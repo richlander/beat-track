@@ -108,6 +108,8 @@ These require a scrobble CSV (from `history` or manual import). They're fast and
 | User prompt | Command | What it shows |
 | --- | --- | --- |
 | "What are my listening stats?" | `stats` | Eddington number, total artists, span, one-hit-wonders, busiest periods |
+| "What's my momentum this week?" | `momentum` | Heating up, on repeat, new to you, comebacks, cooling off |
+| "What changed this month?" | `momentum --window 30d` | Same momentum report over a 30-day window |
 | "What am I listening to this week?" | `top-artists --window 7d` | Top artists by play count in last 7 days |
 | "What are my top artists this year?" | `top-artists --window 365d` | Top artists by play count in last year |
 | "Show me my listening streaks" | `streaks` | Longest consecutive-day streaks, overall and per-artist |
@@ -148,7 +150,7 @@ Runs everything (no args): profile, gaps, slices, new interests, surging, re-eng
 
 ### Proactive discovery check
 
-When greeting the user or starting a session, run `new-discoveries --window 7d`. It classifies recent activity:
+When greeting the user or starting a session, run `momentum` first for a quick overview of what's shifting. For deeper engagement classification, run `new-discoveries --window 7d`. It classifies recent activity:
 
 | Category | What it means | How to respond |
 | --- | --- | --- |
@@ -210,8 +212,8 @@ They'll rebuild on the next full analysis run.
 
 ### "What should I listen to right now?"
 
-1. `live -n 10` — see what's playing / recently played
-2. `new-discoveries --window 7d` — what's new or clicking
+1. `momentum` — what's heating up, on repeat, new, and coming back
+2. `live -n 10` — see what's playing / recently played
 3. `top-artists --window 7d` — current rotation
 4. Use full analysis `Strange absences` for targeted recommendations
 
@@ -232,11 +234,12 @@ They'll rebuild on the next full analysis run.
 
 ### "Tell me about my listening habits"
 
-1. `stats` — overall picture (span, Eddington number, one-hit-wonders)
-2. `top-artists --window 365d` vs `top-artists --window 30d` — what's stable vs shifting
-3. `streaks` — commitment patterns
-4. `artist-velocity --top 10 --bucket yearly` — how taste evolved over time
-5. `new-discoveries --window 60d` — engagement gradient
+1. `momentum` — what's shifting right now
+2. `stats` — overall picture (span, Eddington number, one-hit-wonders)
+3. `top-artists --window 365d` vs `top-artists --window 30d` — what's stable vs shifting
+4. `streaks` — commitment patterns
+5. `artist-velocity --top 10 --bucket yearly` — how taste evolved over time
+6. `new-discoveries --window 60d` — engagement gradient
 
 ### Recording user preferences during conversation
 
