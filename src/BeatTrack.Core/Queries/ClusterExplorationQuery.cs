@@ -29,7 +29,9 @@ public static class ClusterExplorationQuery
         }
 
         var mbidCache = new MbidCache(mbidCachePath);
-        var userSimilar = new UserSimilarArtists(Path.Combine(BeatTrackPaths.DataDir, "my-similar-artists.md"));
+        var shelfItems = new Shelf.Core.Items.ItemStore(Shelf.Core.ShelfPaths.ItemsFile);
+        var shelfRels = new Shelf.Core.Relationships.RelationshipStore(Shelf.Core.ShelfPaths.RelationshipsFile);
+        var userSimilar = new UserSimilarArtists(shelfItems, shelfRels);
 
         // Build canonical name → (display name, total plays) from all scrobbles
         var artistPlays = scrobbles

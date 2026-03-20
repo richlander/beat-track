@@ -1,52 +1,72 @@
-using BeatTrack.Core.SpokenData;
+using Shelf.Core;
+using Shelf.Core.Items;
+using Shelf.Core.Relationships;
 
 namespace BeatTrack.Core;
 
 /// <summary>
 /// Manages a list of artists the user has tried and doesn't connect with.
-/// Stored as a markdown table at ~/.local/share/beat-track/known-misses.md.
+/// Backed by shelf's knowledge graph — items with "dislikes" relationships.
 /// These artists are excluded from recommendations (gaps, strange absences, re-engagement).
 /// </summary>
 public class KnownMisses
 {
-    private readonly SpokenDataStore _store;
+    private readonly ItemStore _items;
+    private readonly RelationshipStore _relationships;
 
-    public KnownMisses(string filePath)
+    public KnownMisses(ItemStore items, RelationshipStore relationships)
     {
-        _store = new SpokenDataStore(filePath, MusicSpokenSchemas.KnownMisses, BeatTrackAnalysis.CanonicalizeArtistName);
+        _items = items;
+        _relationships = relationships;
     }
 
-    public int Count => _store.Count;
+    public int Count => _relationships.GetByVerb(Verbs.Dislikes)
+        .Count(r => IsMusicItem(r.SubjectId));
 
     public bool Contains(string artistName)
     {
-        return _store.ContainsSubject(artistName);
+        var id = ItemStore.Canonicalize(artistName);
+        return _relationships.GetBySubjectAndVerb(id, Verbs.Dislikes).Count > 0;
     }
 
     public void Add(string artistName, string? reason = null)
     {
-        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
-        // Remove existing entry if present, then add updated one
-        _store.Remove(canonical);
-        _store.Add(new SpokenEntry(canonical, artistName, null, null, reason, DateTime.Now.ToString("yyyy-MM-dd")));
+        var (item, _) = _items.GetOrCreate(artistName, "artist", "music");
+
+        // Remove existing dislike if present, then add updated one
+        _relationships.RemoveBySubjectAndVerb(item.Id, Verbs.Dislikes);
+        _relationships.Add(item.Id, Verbs.Dislikes, reason: reason);
     }
 
     public bool Remove(string artistName)
     {
-        var canonical = BeatTrackAnalysis.CanonicalizeArtistName(artistName);
-        return _store.Remove(canonical);
+        var id = ItemStore.Canonicalize(artistName);
+        return _relationships.RemoveBySubjectAndVerb(id, Verbs.Dislikes) > 0;
     }
 
     public IReadOnlyList<(string CanonicalName, string DisplayName, string? Reason, string DateAdded)> GetAll()
     {
-        return _store.GetAll()
-            .OrderBy(static e => e.DisplaySubject, StringComparer.OrdinalIgnoreCase)
-            .Select(static e => (e.CanonicalSubject, e.DisplaySubject, e.Reason, e.DateAdded ?? ""))
+        return _relationships.GetByVerb(Verbs.Dislikes)
+            .Where(r => IsMusicItem(r.SubjectId))
+            .Select(r =>
+            {
+                var item = _items.Get(r.SubjectId);
+                var displayName = item?.Name ?? r.SubjectId;
+                return (r.SubjectId, displayName, r.Reason, r.DateAdded);
+            })
+            .OrderBy(x => x.displayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
     public void Save()
     {
-        _store.Save();
+        _items.Save();
+        _relationships.Save();
+    }
+
+    private bool IsMusicItem(string id)
+    {
+        var item = _items.Get(id);
+        return item is null || string.Equals(item.Domain, "music", StringComparison.OrdinalIgnoreCase);
     }
 }
