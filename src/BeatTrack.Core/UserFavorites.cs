@@ -10,10 +10,10 @@ namespace BeatTrack.Core;
 /// </summary>
 public class UserFavorites
 {
-    private readonly ItemStore _items;
-    private readonly RelationshipStore _relationships;
+    private readonly ShelfItems _items;
+    private readonly ShelfRelationships _relationships;
 
-    public UserFavorites(ItemStore items, RelationshipStore relationships)
+    public UserFavorites(ShelfItems items, ShelfRelationships relationships)
     {
         _items = items;
         _relationships = relationships;

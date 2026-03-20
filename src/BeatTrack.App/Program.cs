@@ -12,8 +12,8 @@ using Shelf.Core.Relationships;
 
 // --- Shared shelf stores ---
 ShelfPaths.EnsureDirectories();
-var shelfItems = new ItemStore(ShelfPaths.ItemsFile);
-var shelfRelationships = new RelationshipStore(ShelfPaths.RelationshipsFile);
+var shelfItems = new ShelfItems(ShelfPaths.ItemsDir);
+var shelfRelationships = new ShelfRelationships(ShelfPaths.RelationshipsDir);
 
 var rootCommand = new RootCommand("beat-track — music listening analysis across Last.fm, YouTube, and Discogs");
 
