@@ -17,7 +17,7 @@
     <AssemblyName>beat-track</AssemblyName>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>beat-track</ToolCommandName>
-    <VersionPrefix>0.2.1</VersionPrefix>
+    <VersionPrefix>0.2.2</VersionPrefix>
     <PackageId>BeatTrack</PackageId>
     <Authors>Richard Lander</Authors>
     <Description>Music listening analysis across Last.fm, YouTube, and Discogs</Description>
