@@ -41,7 +41,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION=$(grep -oP '(?<=<VersionPrefix>)[^<]+' src/BeatTrack.App/BeatTrack.App.csproj)
+          VERSION=$(sed -n 's/.*<VersionPrefix>\(.*\)<\/VersionPrefix>.*/\1/p' src/BeatTrack.App/BeatTrack.App.csproj)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Publish AOT
