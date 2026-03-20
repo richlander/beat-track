@@ -25,6 +25,11 @@ public class BeatTrackConfig
 
             var key = trimmed[..eqIndex].Trim();
             var value = trimmed[(eqIndex + 1)..].Trim();
+
+            // Strip surrounding quotes if present
+            if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+                value = value[1..^1];
+
             _values[key] = value;
         }
     }
