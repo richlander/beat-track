@@ -18,7 +18,7 @@ jobs:
   release:
     if: github.event.inputs.confirm == 'publish'
     runs-on: ubuntu-latest
-    environment: nuget-publish
+    environment: nuget
     steps:
       - uses: actions/checkout@v4
 
