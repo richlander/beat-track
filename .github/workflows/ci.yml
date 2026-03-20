@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  VERSION: '0.2.1'
-
 jobs:
   build:
     strategy:
@@ -40,6 +37,13 @@ jobs:
       - name: Test
         run: dotnet test
 
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/.*<VersionPrefix>\(.*\)<\/VersionPrefix>.*/\1/p' src/BeatTrack.App/BeatTrack.App.csproj)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Publish AOT
         run: >
           dotnet publish src/BeatTrack.App/BeatTrack.App.csproj
@@ -62,15 +66,51 @@ jobs:
       - name: Package (tar.gz)
         if: "!startsWith(matrix.rid, 'win-')"
         shell: bash
-        run: tar -czf beat-track-${{ env.VERSION }}-${{ matrix.rid }}.tar.gz -C publish beat-track
+        run: tar -czf beat-track-${{ steps.version.outputs.version }}-${{ matrix.rid }}.tar.gz -C publish beat-track
 
       - name: Package (zip)
         if: startsWith(matrix.rid, 'win-')
         shell: pwsh
-        run: Compress-Archive -Path publish/beat-track.exe -DestinationPath beat-track-${{ env.VERSION }}-${{ matrix.rid }}.zip
+        run: Compress-Archive -Path publish/beat-track.exe -DestinationPath beat-track-${{ steps.version.outputs.version }}-${{ matrix.rid }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: beat-track-${{ env.VERSION }}-${{ matrix.rid }}
-          path: beat-track-${{ env.VERSION }}-${{ matrix.rid }}.*
+          name: beat-track-${{ steps.version.outputs.version }}-${{ matrix.rid }}
+          path: beat-track-${{ steps.version.outputs.version }}-${{ matrix.rid }}.*
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
+
+      - name: Pack
+        run: dotnet pack src/BeatTrack.App -c Release -p:OfficialBuild=true
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: artifacts/package/release/*.nupkg
+          if-no-files-found: error
+
+      - name: Install tool from local package
+        run: dotnet tool install --global BeatTrack --add-source ./artifacts/package/release --no-cache
+
+      - name: Smoke test - help
+        run: |
+          OUTPUT=$(beat-track --help)
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -q "beat-track"
+
+      - name: Smoke test - status
+        run: beat-track status
+
+      - name: Uninstall tool
+        run: dotnet tool uninstall --global BeatTrack

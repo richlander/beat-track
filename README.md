@@ -8,6 +8,16 @@ Built with .NET 11, AOT-compatible, zero external runtime dependencies.
 
 No .NET required — downloads a self-contained native binary.
 
+### Via dotnet-install
+
+If you have [dotnet-install](https://github.com/richlander/dotnet-install):
+
+```bash
+dotnet install --package beat-track
+```
+
+### Direct download
+
 **Linux / macOS:**
 
 ```bash
@@ -19,6 +29,14 @@ curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/richlande
 ```powershell
 irm https://raw.githubusercontent.com/richlander/beat-track/main/install.ps1 | iex
 ```
+
+### From source
+
+```bash
+./install-source.sh
+```
+
+Builds from the local source tree via dotnet-install (requires the .NET SDK).
 
 ## Agent integration
 

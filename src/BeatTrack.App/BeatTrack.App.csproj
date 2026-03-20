@@ -15,7 +15,26 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>
     <AssemblyName>beat-track</AssemblyName>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>beat-track</ToolCommandName>
+    <VersionPrefix>0.2.1</VersionPrefix>
+    <PackageId>BeatTrack</PackageId>
+    <Authors>Richard Lander</Authors>
+    <Description>Music listening analysis across Last.fm, YouTube, and Discogs</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(OfficialBuild)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\SKILL.md" LogicalName="SKILL.md" />
