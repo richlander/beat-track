@@ -56,7 +56,7 @@ lastfm_user=YOUR_USERNAME
 ### Step 3: Download your data
 
 ```bash
-beat-track history     # full scrobble history (~1 min for 60k scrobbles)
+beat-track pull     # full scrobble history (~1 min for 60k scrobbles)
 beat-track snapshot    # top artists by period, loved tracks, MBIDs
 ```
 
@@ -81,25 +81,27 @@ These enrich cross-source analysis but are not required:
 
 | Data source | What reads it | Freshness target | How to refresh |
 | --- | --- | --- | --- |
-| **Scrobble CSV** | All baseline queries | Re-download before any "this week" analysis | `beat-track history` |
+| **Scrobble CSV** | All baseline queries | Re-download before any "this week" analysis | `beat-track pull` |
 | **Snapshot JSON** | `analyze` (gap analysis, similarity) | Weekly or before deep analysis runs | `beat-track snapshot` |
 | **Discogs CSV** | `analyze` (cross-source) | When collection changes | Re-export from Discogs |
 | **YouTube Takeout** | `analyze` (cross-source) | Rarely changes | Re-download from Google Takeout |
+| **Shelf (musicbrainz)** | `learn` output: city, country, genre, member-of | After adding new artists to rotation | `beat-track learn` |
 | **Caches** (MBID, similar artists) | `analyze` | Regenerable, safe to delete | `rm -rf ~/.cache/beat-track/` |
-| **Spoken data** (favorites, misses) | `analyze` (recommendations) | Accumulates over time | Agent writes these during conversations |
+| **Shelf (journal)** | Preferences (likes, misses) | Accumulates over time | Agent writes via `miss add` or `shelf like` |
 
 ### Before a "what's happening now" session
 
 ```bash
-beat-track history     # refresh scrobbles (captures today's plays)
+beat-track pull     # refresh scrobbles (captures today's plays)
 beat-track momentum    # now this reflects the latest data
 ```
 
 ### Before a deep analysis session
 
 ```bash
-beat-track history     # refresh scrobbles
+beat-track pull        # refresh scrobbles
 beat-track snapshot    # refresh top artists and loved tracks
+beat-track learn       # enrich top artists with MusicBrainz metadata → shelf
 beat-track analyze     # full cross-source analysis with fresh data
 ```
 
@@ -135,7 +137,7 @@ These are automatically used in analysis: favorites seed gap analysis, misses ar
 
 ## Workflow 4: Baseline Reports
 
-These require a scrobble CSV (from `history` or manual import). They're fast and don't call any APIs.
+These require a scrobble CSV (from `pull` or manual import). They're fast and don't call any APIs.
 
 | User prompt | Command | What it shows |
 | --- | --- | --- |

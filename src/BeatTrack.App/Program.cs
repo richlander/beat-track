@@ -275,9 +275,10 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
     rootCommand.Subcommands.Add(cmd);
 }
 
-// --- history ---
+// --- pull (formerly history) ---
 {
-    var cmd = new Command("history", "Download full scrobble history from Last.fm");
+    var cmd = new Command("pull", "Pull latest scrobble history from Last.fm");
+    cmd.Aliases.Add("history");
     cmd.SetAction(async (pr, ct) =>
     {
         var (client, userName, http) = CreateApiClient();
@@ -291,6 +292,166 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
         using (var writer = new StreamWriter(historyPath)) { HistoryFetcher.WriteCsv(writer, historyTracks, userName); }
         Console.WriteLine($"scrobbles: {historyTracks.Count:N0}");
         Console.WriteLine($"written_to: {historyPath}");
+        return 0;
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
+// --- learn ---
+{
+    var cmd = new Command("learn", "Populate shelf with artist metadata from MusicBrainz");
+    var topOption = new Option<int>("--top") { Description = "Number of top artists to enrich", DefaultValueFactory = _ => 100 };
+    cmd.Options.Add(topOption);
+    cmd.SetAction(async (pr, ct) =>
+    {
+        var topN = pr.GetValue(topOption);
+
+        // Load scrobbles
+        var (scrobbles, scrobblePath) = LoadScrobbles();
+        if (scrobbles is null) return 1;
+        Console.Error.WriteLine($"loaded: {scrobbles.Count:N0} scrobbles from {System.IO.Path.GetFileName(scrobblePath)}");
+
+        var topArtists = scrobbles
+            .Where(static s => s.TimestampMs > 0)
+            .GroupBy(s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName), StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(static g => g.Count())
+            .Take(topN)
+            .Select(static g => (Canonical: g.Key, DisplayName: g.First().ArtistName, Plays: g.Count()))
+            .ToList();
+
+        Console.Error.WriteLine($"top {topArtists.Count} artists by play count");
+
+        // Load MBID cache
+        var cacheDir = BeatTrackPaths.CacheDir;
+        Directory.CreateDirectory(cacheDir);
+        var mbidCache = new MbidCache(System.IO.Path.Combine(cacheDir, "mbid-cache.md"));
+
+        // Look up missing MBIDs
+        var http = new HttpClient();
+        http.BaseAddress = new Uri("https://musicbrainz.org/ws/2/");
+        http.DefaultRequestHeaders.Add("User-Agent", "BeatTrack/0.2 (https://github.com/richlander/beat-track)");
+        http.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+
+        var missing = topArtists.Where(a => mbidCache.GetMbid(a.Canonical) is null).ToList();
+        if (missing.Count > 0)
+        {
+            Console.Error.Write($"looking up {missing.Count} MBIDs... ");
+            var mbHttp = new HttpClient();
+            mbHttp.BaseAddress = new Uri("https://musicbrainz.org/ws/2/");
+            mbHttp.DefaultRequestHeaders.Add("User-Agent", "BeatTrack/0.2 (https://github.com/richlander/beat-track)");
+            mbHttp.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+            using var mbLookup = new MusicBrainzArtistLookup(mbHttp);
+            var confirmed = await mbLookup.LookupCandidatesAsync(missing.Select(static a => a.Canonical));
+            foreach (var r in confirmed)
+            {
+                if (r.MusicBrainzId is not null)
+                    mbidCache.Set(BeatTrackAnalysis.CanonicalizeArtistName(r.Query), r.MusicBrainzId, r.MatchedName, "musicbrainz");
+            }
+            mbidCache.Save();
+            Console.Error.WriteLine($"{confirmed.Count} found");
+        }
+
+        // Enrich from MusicBrainz → shelf
+        var enriched = 0;
+        var memberOfCount = 0;
+
+        // Build name → shelf ID lookup for member-of matching
+        var shelfNameToId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        Console.Error.Write("enriching: ");
+        foreach (var (canonical, displayName, plays) in topArtists)
+        {
+            var mbid = mbidCache.GetMbid(canonical);
+            if (mbid is null) continue;
+
+            await Task.Delay(1100, ct); // MusicBrainz rate limit
+
+            try
+            {
+                var url = $"artist/{mbid}?fmt=json&inc=tags+artist-rels";
+                var json = await http.GetStringAsync(url, ct);
+                var detail = System.Text.Json.JsonSerializer.Deserialize(json, LearnJsonContext.Default.MbLearnArtist);
+                if (detail is null) continue;
+
+                // Genre tags
+                var genreTags = (detail.Tags ?? [])
+                    .Where(static t => t.Count >= 1)
+                    .OrderByDescending(static t => t.Count)
+                    .Take(5)
+                    .Select(static t => t.Name)
+                    .ToList();
+
+                var city = detail.BeginArea?.Name;
+                var country = detail.Area?.Name ?? detail.Country;
+                var type = detail.Type?.ToLowerInvariant() ?? "artist";
+
+                // Keywords: genre + city + country
+                var keywords = new List<string>(genreTags);
+                if (city is not null) keywords.Add(city.ToLowerInvariant());
+                if (country is not null) keywords.Add(country.ToLowerInvariant());
+
+                var item = shelfItems.Put(displayName, type == "person" ? "solo-artist" : "artist", "music",
+                    string.Join(", ", keywords), "musicbrainz");
+                shelfNameToId.TryAdd(displayName, item.Id);
+                shelfNameToId.TryAdd(canonical, item.Id);
+
+                // Member-of relationships
+                if (detail.Relations is not null)
+                {
+                    foreach (var rel in detail.Relations)
+                    {
+                        if (rel.Type != "member of band" || rel.Artist is null) continue;
+
+                        if (rel.Direction == "backward")
+                        {
+                            // This person is a member of our band
+                            var memberName = rel.Artist.Name;
+                            if (shelfNameToId.TryGetValue(memberName, out var memberShelfId) ||
+                                shelfNameToId.TryGetValue(BeatTrackAnalysis.CanonicalizeArtistName(memberName), out memberShelfId))
+                            {
+                                if (string.Equals(memberShelfId, item.Id, StringComparison.OrdinalIgnoreCase)) continue;
+                                var existing = shelfRelationships.GetBySubjectAndVerb(memberShelfId, "member-of");
+                                if (existing.Any(r => string.Equals(r.TargetId, item.Id, StringComparison.OrdinalIgnoreCase))) continue;
+                                var attrs = rel.Attributes is { Count: > 0 } ? string.Join(", ", rel.Attributes) : null;
+                                shelfRelationships.Add(memberShelfId, "member-of", item.Id, attrs, "musicbrainz");
+                                memberOfCount++;
+                            }
+                        }
+                        else if (rel.Direction == "forward")
+                        {
+                            // Our artist is a member of this band
+                            var bandName = rel.Artist.Name;
+                            if (shelfNameToId.TryGetValue(bandName, out var targetBandId) ||
+                                shelfNameToId.TryGetValue(BeatTrackAnalysis.CanonicalizeArtistName(bandName), out targetBandId))
+                            {
+                                if (string.Equals(item.Id, targetBandId, StringComparison.OrdinalIgnoreCase)) continue;
+                                var existing = shelfRelationships.GetBySubjectAndVerb(item.Id, "member-of");
+                                if (existing.Any(r => string.Equals(r.TargetId, targetBandId, StringComparison.OrdinalIgnoreCase))) continue;
+                                var attrs = rel.Attributes is { Count: > 0 } ? string.Join(", ", rel.Attributes) : null;
+                                shelfRelationships.Add(item.Id, "member-of", targetBandId, attrs, "musicbrainz");
+                                memberOfCount++;
+                            }
+                        }
+                    }
+                }
+
+                enriched++;
+                Console.Error.Write(".");
+            }
+            catch (HttpRequestException)
+            {
+                Console.Error.Write("x");
+            }
+        }
+
+        shelfItems.Save();
+        shelfRelationships.Save();
+        http.Dispose();
+
+        Console.Error.WriteLine();
+        Console.WriteLine($"enriched: {enriched} artists");
+        Console.WriteLine($"member_of: {memberOfCount} relationships");
+        Console.WriteLine($"shelf: {shelfItems.Count} items, {shelfRelationships.Count} relationships");
         return 0;
     });
     rootCommand.Subcommands.Add(cmd);
