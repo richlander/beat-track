@@ -1,36 +1,49 @@
-using BeatTrack.Core.SpokenData;
+using Shelf.Core.Items;
+using Shelf.Core.Relationships;
 
 namespace BeatTrack.Core;
 
 /// <summary>
-/// User-declared favorite artists stored as a markdown table.
+/// User-declared favorite artists.
+/// Backed by shelf's knowledge graph — items with "likes" relationships in the music domain.
 /// Acts as seed artists for gap analysis even without listening history.
-///
-/// Format:
-///   | artist | notes |
-///   | --- | --- |
-///   | Slowdive | |
-///   | Boards of Canada | especially older albums |
 /// </summary>
 public class UserFavorites
 {
-    private readonly SpokenDataStore _store;
+    private readonly ItemStore _items;
+    private readonly RelationshipStore _relationships;
 
-    public UserFavorites(string filePath)
+    public UserFavorites(ItemStore items, RelationshipStore relationships)
     {
-        _store = new SpokenDataStore(filePath, MusicSpokenSchemas.Favorites, BeatTrackAnalysis.CanonicalizeArtistName);
+        _items = items;
+        _relationships = relationships;
     }
 
-    public int Count => _store.Count;
+    public int Count => _relationships.GetByVerb(Verbs.Likes)
+        .Count(r => IsMusicItem(r.SubjectId));
 
     public IReadOnlyList<(string CanonicalName, string DisplayName, string? Notes)> GetAll() =>
-        _store.GetAll()
-            .Select(static e => (e.CanonicalSubject, e.DisplaySubject, e.Reason))
+        _relationships.GetByVerb(Verbs.Likes)
+            .Where(r => IsMusicItem(r.SubjectId))
+            .Select(r =>
+            {
+                var item = _items.Get(r.SubjectId);
+                var displayName = item?.Name ?? r.SubjectId;
+                return (r.SubjectId, displayName, r.Reason);
+            })
+            .OrderBy(x => x.displayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    /// <summary>
-    /// Gets canonical names of all favorite artists.
-    /// </summary>
     public IReadOnlyList<string> GetCanonicalNames() =>
-        _store.GetAllCanonicalSubjects();
+        _relationships.GetByVerb(Verbs.Likes)
+            .Where(r => IsMusicItem(r.SubjectId))
+            .Select(r => r.SubjectId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private bool IsMusicItem(string id)
+    {
+        var item = _items.Get(id);
+        return item is null || string.Equals(item.Domain, "music", StringComparison.OrdinalIgnoreCase);
+    }
 }

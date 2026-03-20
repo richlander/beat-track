@@ -6,6 +6,14 @@ using BeatTrack.Core.Queries;
 using BeatTrack.Discogs;
 using BeatTrack.LastFm;
 using BeatTrack.YouTube;
+using Shelf.Core;
+using Shelf.Core.Items;
+using Shelf.Core.Relationships;
+
+// --- Shared shelf stores ---
+ShelfPaths.EnsureDirectories();
+var shelfItems = new ItemStore(ShelfPaths.ItemsFile);
+var shelfRelationships = new RelationshipStore(ShelfPaths.RelationshipsFile);
 
 var rootCommand = new RootCommand("beat-track — music listening analysis across Last.fm, YouTube, and Discogs");
 
@@ -159,7 +167,19 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
 // --- miss ---
 {
     var cmd = new Command("miss", "Track artists you've tried but don't connect with");
-    cmd.SetAction((_) => HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), []));
+    cmd.SetAction((_) =>
+    {
+        var misses = new KnownMisses(shelfItems, shelfRelationships);
+        var all = misses.GetAll();
+        if (all.Count == 0) { Console.WriteLine("No known misses. Use 'beat-track miss add \"Artist Name\"' to add one."); return 0; }
+        Console.WriteLine($"known_misses ({all.Count}):");
+        foreach (var (_, displayName, reason, dateAdded) in all)
+        {
+            var reasonText = reason is not null ? $" — {reason}" : "";
+            Console.WriteLine($"  {displayName} (added {dateAdded}){reasonText}");
+        }
+        return 0;
+    });
 
     var addCmd = new Command("add", "Add an artist to known misses");
     var artistArg = new Argument<string>("artist") { Description = "Artist name" };
@@ -167,17 +187,25 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
     addCmd.Arguments.Add(artistArg); addCmd.Options.Add(reasonOpt);
     addCmd.SetAction((pr) =>
     {
-        var queryArgs = new List<string> { "add", pr.GetValue(artistArg)! };
-        var r = pr.GetValue(reasonOpt);
-        if (r is not null) { queryArgs.Add("--reason"); queryArgs.Add(r); }
-        return HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), [.. queryArgs]);
+        var misses = new KnownMisses(shelfItems, shelfRelationships);
+        misses.Add(pr.GetValue(artistArg)!, pr.GetValue(reasonOpt));
+        misses.Save();
+        Console.WriteLine($"Added '{pr.GetValue(artistArg)}' to known misses.");
+        return 0;
     });
     cmd.Subcommands.Add(addCmd);
 
     var removeCmd = new Command("remove", "Remove an artist from known misses");
     var removeArg = new Argument<string>("artist") { Description = "Artist name" };
     removeCmd.Arguments.Add(removeArg);
-    removeCmd.SetAction((pr) => HandleMissCommand(System.IO.Path.Combine(BeatTrackPaths.DataDir, "known-misses.md"), ["remove", pr.GetValue(removeArg)!]));
+    removeCmd.SetAction((pr) =>
+    {
+        var misses = new KnownMisses(shelfItems, shelfRelationships);
+        var name = pr.GetValue(removeArg)!;
+        if (misses.Remove(name)) { misses.Save(); Console.WriteLine($"Removed '{name}' from known misses."); }
+        else Console.WriteLine($"'{name}' not found in known misses.");
+        return 0;
+    });
     cmd.Subcommands.Add(removeCmd);
     rootCommand.Subcommands.Add(cmd);
 }
@@ -461,16 +489,15 @@ async Task<int> RunFullAnalysis()
     var mbidCache = new MbidCache(mbidCachePath);
     Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
 
-    var knownMissesPath = Path.Combine(homeData, "known-misses.md");
-    var knownMisses = new KnownMisses(knownMissesPath);
+    var knownMisses = new KnownMisses(shelfItems, shelfRelationships);
     if (knownMisses.Count > 0)
         Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
 
-    var userFavorites = new UserFavorites(Path.Combine(homeData, "my-favorites.md"));
+    var userFavorites = new UserFavorites(shelfItems, shelfRelationships);
     if (userFavorites.Count > 0)
         Console.WriteLine($"user_favorites: {userFavorites.Count} artists");
 
-    var userSimilar = new UserSimilarArtists(Path.Combine(homeData, "my-similar-artists.md"));
+    var userSimilar = new UserSimilarArtists(shelfItems, shelfRelationships);
     if (userSimilar.Count > 0)
         Console.WriteLine($"user_similar_artists: {userSimilar.Count} artists with user-defined similarities");
 
@@ -903,54 +930,6 @@ static string? FindDir(string? envOverride, params string[] searchPaths)
     return null;
 }
 
-static int HandleMissCommand(string filePath, string[] args)
-{
-    var misses = new KnownMisses(filePath);
-
-    if (args.Length == 0)
-    {
-        var all = misses.GetAll();
-        if (all.Count == 0) { Console.WriteLine("No known misses. Use 'beat-track miss add \"Artist Name\"' to add one."); return 0; }
-        Console.WriteLine($"known_misses ({all.Count}):");
-        foreach (var (_, displayName, reason, dateAdded) in all)
-        {
-            var reasonText = reason is not null ? $" — {reason}" : "";
-            Console.WriteLine($"  {displayName} (added {dateAdded}){reasonText}");
-        }
-        return 0;
-    }
-
-    var subCommand = args[0].ToLowerInvariant();
-    switch (subCommand)
-    {
-        case "add":
-        {
-            if (args.Length < 2) { Console.Error.WriteLine("Usage: miss add \"Artist Name\" [--reason \"doesn't grab me\"]"); return 1; }
-            var artistName = args[1];
-            string? reason = null;
-            for (var i = 2; i < args.Length - 1; i++)
-                if (string.Equals(args[i], "--reason", StringComparison.OrdinalIgnoreCase)) { reason = args[i + 1]; break; }
-            misses.Add(artistName, reason);
-            misses.Save();
-            Console.WriteLine($"Added '{artistName}' to known misses.");
-            return 0;
-        }
-        case "remove":
-        {
-            if (args.Length < 2) { Console.Error.WriteLine("Usage: miss remove \"Artist Name\""); return 1; }
-            if (misses.Remove(args[1])) { misses.Save(); Console.WriteLine($"Removed '{args[1]}' from known misses."); }
-            else Console.WriteLine($"'{args[1]}' not found in known misses.");
-            return 0;
-        }
-        default:
-        {
-            misses.Add(subCommand, null);
-            misses.Save();
-            Console.WriteLine($"Added '{subCommand}' to known misses.");
-            return 0;
-        }
-    }
-}
 
 static List<SimilarArtist> LoadSimilarArtistsCache(string filePath)
 {
