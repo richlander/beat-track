@@ -1,13 +1,13 @@
-name: Release
+name: Publish
 
 on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'CI run ID to download artifacts from'
+        description: 'CI workflow run ID to publish from'
         required: true
-      confirmation:
-        description: 'Type "release" to confirm'
+      confirm:
+        description: 'Type "publish" to confirm NuGet release'
         required: true
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   release:
-    if: github.event.inputs.confirmation == 'release'
+    if: github.event.inputs.confirm == 'publish'
     runs-on: ubuntu-latest
     environment: nuget-publish
     steps:
