@@ -37,11 +37,11 @@ jobs:
           run-id: ${{ github.event.inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download package
+      - name: Download all packages from CI run
         uses: actions/download-artifact@v4
         with:
           path: packages
-          pattern: package
+          pattern: package-*
           merge-multiple: true
           run-id: ${{ github.event.inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -65,11 +65,31 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
-      - name: Publish to NuGet
+      # Publish RID-specific packages first, then any, then pointer last
+      - name: Publish packages
         run: |
-          for pkg in packages/*.nupkg; do
-            echo "Publishing $pkg"
-            dotnet nuget push "$pkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+          # 1. RID-specific AOT packages
+          for pkg in packages/BeatTrack.win-*.nupkg packages/BeatTrack.linux-*.nupkg packages/BeatTrack.osx-*.nupkg; do
+            if [[ -f "$pkg" ]]; then
+              echo "Publishing $pkg"
+              dotnet nuget push "$pkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+            fi
+          done
+
+          # 2. Any (non-AOT) package
+          for pkg in packages/BeatTrack.any.*.nupkg; do
+            if [[ -f "$pkg" ]]; then
+              echo "Publishing any package: $pkg"
+              dotnet nuget push "$pkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+            fi
+          done
+
+          # 3. Pointer package last (references all RID-specific packages)
+          for pkg in packages/BeatTrack.[0-9]*.nupkg; do
+            if [[ -f "$pkg" ]]; then
+              echo "Publishing pointer package: $pkg"
+              dotnet nuget push "$pkg" --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+            fi
           done
         shell: bash
 
