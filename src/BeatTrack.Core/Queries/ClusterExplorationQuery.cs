@@ -29,8 +29,8 @@ public static class ClusterExplorationQuery
         }
 
         var mbidCache = new MbidCache(mbidCachePath);
-        var shelfItems = new Shelf.Core.Items.ItemStore(Shelf.Core.ShelfPaths.ItemsFile);
-        var shelfRels = new Shelf.Core.Relationships.RelationshipStore(Shelf.Core.ShelfPaths.RelationshipsFile);
+        var shelfItems = new Shelf.Core.Items.ShelfItems(Shelf.Core.ShelfPaths.ItemsDir);
+        var shelfRels = new Shelf.Core.Relationships.ShelfRelationships(Shelf.Core.ShelfPaths.RelationshipsDir);
         var userSimilar = new UserSimilarArtists(shelfItems, shelfRels);
 
         // Build canonical name → (display name, total plays) from all scrobbles

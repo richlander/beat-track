@@ -12,7 +12,7 @@ public class UserSimilarArtists
 {
     private readonly Dictionary<string, List<string>> _graph = new(StringComparer.OrdinalIgnoreCase);
 
-    public UserSimilarArtists(ItemStore items, RelationshipStore relationships)
+    public UserSimilarArtists(ShelfItems items, ShelfRelationships relationships)
     {
         foreach (var rel in relationships.GetByVerb(Verbs.SimilarTo))
         {
@@ -23,8 +23,6 @@ public class UserSimilarArtists
             if (subjectItem is not null && !string.Equals(subjectItem.Domain, "music", StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            // Shelf stores canonical IDs; map back to canonical artist names
-            // The ID format is the canonical name (slugified)
             AddEdge(rel.SubjectId, rel.TargetId);
             AddEdge(rel.TargetId, rel.SubjectId);
         }
@@ -34,7 +32,6 @@ public class UserSimilarArtists
 
     public IReadOnlyList<string> GetSimilar(string canonicalArtistName)
     {
-        // Try both the raw canonical name and the shelf-style ID
         if (_graph.TryGetValue(canonicalArtistName, out var list))
             return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 

@@ -1,4 +1,3 @@
-using Shelf.Core;
 using Shelf.Core.Items;
 using Shelf.Core.Relationships;
 
@@ -11,10 +10,10 @@ namespace BeatTrack.Core;
 /// </summary>
 public class KnownMisses
 {
-    private readonly ItemStore _items;
-    private readonly RelationshipStore _relationships;
+    private readonly ShelfItems _items;
+    private readonly ShelfRelationships _relationships;
 
-    public KnownMisses(ItemStore items, RelationshipStore relationships)
+    public KnownMisses(ShelfItems items, ShelfRelationships relationships)
     {
         _items = items;
         _relationships = relationships;
