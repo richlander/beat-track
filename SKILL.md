@@ -29,6 +29,20 @@ Run `beat-track` with no arguments to see all available commands.
 
 All commands produce structured markdown: `#` title, inline summary fields, and `##` sections with pipe tables. This format is both human-readable and machine-parseable. No imperative/ad-hoc formatting — every command renders through a view model.
 
+## Command Architecture
+
+Commands fall into three categories:
+
+| Category | Commands | Speed | Network |
+| --- | --- | --- | --- |
+| **Data acquisition** | `pull`, `snapshot` | Minutes (downloads full history) | Last.fm API |
+| **Enrichment** | `learn`, `learn "Artist"` | ~3s per artist (rate-limited) | MusicBrainz + ListenBrainz |
+| **Analysis** | `momentum`, `top-artists`, `stats`, `analyze`, all others | Seconds (local only) | None |
+
+**Key principle**: analysis commands never call external services. All API work happens in `pull`, `snapshot`, and `learn`. If similarity or metadata is missing from `analyze`, run `learn` first — don't expect `analyze` to fetch it.
+
+`learn` accepts specific artists (`beat-track learn "MUNYA" "Mr Twin Sister"`) or top-N by play count (`beat-track learn --top 100`). Each artist takes ~3 seconds due to MusicBrainz rate limits. For each artist it fetches genre tags, origin city/country, band membership (MusicBrainz) and similar-to relationships (ListenBrainz), writing everything to shelf.
+
 ---
 
 ## Workflow 1: First-Run Setup
@@ -62,7 +76,7 @@ beat-track snapshot    # top artists by period, loved tracks, MBIDs
 
 After this, all baseline queries work: `momentum`, `top-artists`, `stats`, `new-discoveries`, `streaks`, `artist-depth`.
 
-The `analyze` command additionally needs the snapshot for gap analysis and similarity lookups.
+The `analyze` command additionally needs the snapshot for cross-source analysis. It is fully local — no API calls.
 
 ### Optional: supplementary sources
 
@@ -85,8 +99,7 @@ These enrich cross-source analysis but are not required:
 | **Snapshot JSON** | `analyze` (gap analysis, similarity) | Weekly or before deep analysis runs | `beat-track snapshot` |
 | **Discogs CSV** | `analyze` (cross-source) | When collection changes | Re-export from Discogs |
 | **YouTube Takeout** | `analyze` (cross-source) | Rarely changes | Re-download from Google Takeout |
-| **Shelf (musicbrainz)** | `learn` output: city, country, genre, member-of | After adding new artists to rotation | `beat-track learn` |
-| **Caches** (MBID, similar artists) | `analyze` | Regenerable, safe to delete | `rm -rf ~/.cache/beat-track/` |
+| **Shelf (musicbrainz + listenbrainz)** | `learn` output: city, country, genre, member-of, similar-to | After adding new artists to rotation | `beat-track learn` or `beat-track learn "Artist"` |
 | **Shelf (journal)** | Preferences (likes, misses) | Accumulates over time | Agent writes via `miss add` or `shelf like` |
 
 ### Before a "what's happening now" session
@@ -157,7 +170,7 @@ These require a scrobble CSV (from `pull` or manual import). They're fast and do
 
 ## Workflow 5: Advanced Reports and Queries
 
-These require a scrobble CSV + snapshot. May call ListenBrainz/MusicBrainz APIs on first run (results are cached).
+These require a scrobble CSV + snapshot. All commands are fully local — no API calls.
 
 ### Full analysis
 
