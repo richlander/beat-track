@@ -379,12 +379,27 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
             Console.Error.WriteLine($"{confirmed.Count} found");
         }
 
-        // Enrich from MusicBrainz → shelf
+        // Enrich from MusicBrainz + ListenBrainz → shelf
         var enriched = 0;
         var memberOfCount = 0;
+        var similarCount = 0;
 
         // Build name → shelf ID lookup for member-of matching
         var shelfNameToId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // Track MBID → shelf ID for similar-to matching — pre-populate from existing data
+        var mbidToShelfId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in mbidCache.GetAll())
+        {
+            var existingItem = shelfItems.Get(ItemStore.Canonicalize(entry.MatchedName ?? entry.CanonicalName));
+            if (existingItem is not null)
+            {
+                mbidToShelfId.TryAdd(entry.Mbid, existingItem.Id);
+                shelfNameToId.TryAdd(entry.MatchedName ?? entry.CanonicalName, existingItem.Id);
+                shelfNameToId.TryAdd(entry.CanonicalName, existingItem.Id);
+            }
+        }
+
+        using var lbLookup = new ListenBrainzSimilarArtistsLookup();
 
         Console.Error.Write("enriching: ");
         foreach (var (canonical, displayName, plays) in topArtists)
@@ -396,12 +411,12 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
 
             try
             {
-                var url = $"artist/{mbid}?fmt=json&inc=tags+artist-rels";
-                var json = await http.GetStringAsync(url, ct);
+                // --- MusicBrainz: metadata, tags, member-of ---
+                var mbUrl = $"artist/{mbid}?fmt=json&inc=tags+artist-rels";
+                var json = await http.GetStringAsync(mbUrl, ct);
                 var detail = System.Text.Json.JsonSerializer.Deserialize(json, LearnJsonContext.Default.MbLearnArtist);
                 if (detail is null) continue;
 
-                // Genre tags
                 var genreTags = (detail.Tags ?? [])
                     .Where(static t => t.Count >= 1)
                     .OrderByDescending(static t => t.Count)
@@ -413,7 +428,6 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
                 var country = detail.Area?.Name ?? detail.Country;
                 var type = detail.Type?.ToLowerInvariant() ?? "artist";
 
-                // Keywords: genre + city + country
                 var keywords = new List<string>(genreTags);
                 if (city is not null) keywords.Add(city.ToLowerInvariant());
                 if (country is not null) keywords.Add(country.ToLowerInvariant());
@@ -422,6 +436,7 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
                     string.Join(", ", keywords), url: null, source: "musicbrainz");
                 shelfNameToId.TryAdd(displayName, item.Id);
                 shelfNameToId.TryAdd(canonical, item.Id);
+                mbidToShelfId.TryAdd(mbid, item.Id);
 
                 // Member-of relationships
                 if (detail.Relations is not null)
@@ -432,7 +447,6 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
 
                         if (rel.Direction == "backward")
                         {
-                            // This person is a member of our band
                             var memberName = rel.Artist.Name;
                             if (shelfNameToId.TryGetValue(memberName, out var memberShelfId) ||
                                 shelfNameToId.TryGetValue(BeatTrackAnalysis.CanonicalizeArtistName(memberName), out memberShelfId))
@@ -447,7 +461,6 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
                         }
                         else if (rel.Direction == "forward")
                         {
-                            // Our artist is a member of this band
                             var bandName = rel.Artist.Name;
                             if (shelfNameToId.TryGetValue(bandName, out var targetBandId) ||
                                 shelfNameToId.TryGetValue(BeatTrackAnalysis.CanonicalizeArtistName(bandName), out targetBandId))
@@ -461,6 +474,29 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
                             }
                         }
                     }
+                }
+
+                // --- ListenBrainz: similar artists ---
+                try
+                {
+                    var similar = await lbLookup.GetSimilarArtistsAsync(mbid, cancellationToken: ct);
+                    foreach (var sim in similar.Take(20)) // top 20 similar per artist
+                    {
+                        // Only link to artists already in our shelf
+                        if (!mbidToShelfId.TryGetValue(sim.ArtistMbid, out var targetShelfId)) continue;
+                        if (string.Equals(item.Id, targetShelfId, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        var existingSim = shelfRelationships.GetBySubjectAndVerb(item.Id, Shelf.Core.Relationships.Verbs.SimilarTo);
+                        if (existingSim.Any(r => string.Equals(r.TargetId, targetShelfId, StringComparison.OrdinalIgnoreCase))) continue;
+
+                        shelfRelationships.Add(item.Id, Shelf.Core.Relationships.Verbs.SimilarTo, targetShelfId,
+                            reason: null, source: "listenbrainz");
+                        similarCount++;
+                    }
+                }
+                catch (HttpRequestException)
+                {
+                    // ListenBrainz failure is non-fatal
                 }
 
                 enriched++;
@@ -479,6 +515,7 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
         Console.Error.WriteLine();
         Console.WriteLine($"enriched: {enriched} artists");
         Console.WriteLine($"member_of: {memberOfCount} relationships");
+        Console.WriteLine($"similar_to: {similarCount} relationships");
         Console.WriteLine($"shelf: {shelfItems.Count} items, {shelfRelationships.Count} relationships");
         return 0;
     });
@@ -672,12 +709,7 @@ async Task<int> RunFullAnalysis()
         Console.WriteLine($"  {release.ArtistCanonicalName} - {release.Title} [{sources}]");
     }
 
-    // === MBID cache + Gap analysis ===
-    var cacheDir = BeatTrackPaths.CacheDir;
-    var mbidCachePath = Path.Combine(cacheDir, "mbid-cache.md");
-    var mbidCache = new MbidCache(mbidCachePath);
-    Console.WriteLine($"mbid_cache: {mbidCache.Count} cached entries from {mbidCachePath}");
-
+    // === Shelf-based analysis (no API calls — all data from shelf + local files) ===
     var knownMisses = new KnownMisses(shelfItems, shelfRelationships);
     if (knownMisses.Count > 0)
         Console.WriteLine($"known_misses: {knownMisses.Count} artists excluded from recommendations");
@@ -686,143 +718,64 @@ async Task<int> RunFullAnalysis()
     if (userFavorites.Count > 0)
         Console.WriteLine($"user_favorites: {userFavorites.Count} artists");
 
-    var userSimilar = new UserSimilarArtists(shelfItems, shelfRelationships);
-    if (userSimilar.Count > 0)
-        Console.WriteLine($"user_similar_artists: {userSimilar.Count} artists with user-defined similarities");
+    // Read similar-to relationships from shelf (populated by `learn`)
+    var similarRels = shelfRelationships.GetByVerb(Shelf.Core.Relationships.Verbs.SimilarTo);
+    if (similarRels.Count > 0)
+        Console.WriteLine($"similar_to: {similarRels.Count} relationships from shelf");
 
-    if (lastFmSnapshot is not null)
+    // Build similarity graph from shelf relationships
+    var allSimilar = new Dictionary<string, List<(string TargetId, string TargetName)>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var rel in similarRels)
     {
-        var added = mbidCache.AddFromLastFmSnapshot(lastFmSnapshot);
-        if (added > 0) Console.WriteLine($"mbid_cache: added {added} from Last.fm snapshot");
+        if (rel.TargetId is null) continue;
+        if (!allSimilar.TryGetValue(rel.SubjectId, out var list)) { list = []; allSimilar[rel.SubjectId] = list; }
+        var targetItem = shelfItems.Get(rel.TargetId);
+        list.Add((rel.TargetId, targetItem?.Name ?? rel.TargetId));
     }
 
-    var uncachedArtists = profile.Artists
-        .Select(static a => a.CanonicalName)
-        .Concat(userFavorites.GetCanonicalNames())
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Where(a => mbidCache.GetMbid(a) is null)
-        .Take(50)
-        .ToList();
-
-    if (uncachedArtists.Count > 0)
-    {
-        Console.Write($"mbid_lookup: resolving {uncachedArtists.Count} artists via MusicBrainz... ");
-        using var mbLookup = new MusicBrainzArtistLookup();
-        var confirmed = await mbLookup.LookupCandidatesAsync(uncachedArtists, cancellationToken: CancellationToken.None);
-        foreach (var result in confirmed)
-        {
-            if (result.MusicBrainzId is not null)
-                mbidCache.Set(BeatTrackAnalysis.CanonicalizeArtistName(result.Query), result.MusicBrainzId, result.MatchedName, "musicbrainz");
-        }
-        Console.WriteLine($"{confirmed.Count} confirmed");
-    }
-
-    mbidCache.Save();
-    Console.WriteLine($"mbid_cache: {mbidCache.Count} total entries saved");
-
-    var seedArtists = mbidCache.GetAll()
-        .Select(static e => (Mbid: e.Mbid, Name: e.MatchedName ?? e.CanonicalName))
-        .DistinctBy(static s => s.Mbid, StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
-    var allSimilar = new Dictionary<string, List<SimilarArtist>>(StringComparer.OrdinalIgnoreCase);
-    var seedNameByMbid = seedArtists.ToDictionary(s => s.Mbid, s => s.Name, StringComparer.OrdinalIgnoreCase);
-    var knownMbids = new HashSet<string>(mbidCache.GetAll().Select(static e => e.Mbid), StringComparer.OrdinalIgnoreCase);
-
-    if (seedArtists.Count > 0)
+    if (allSimilar.Count > 0)
     {
         Console.WriteLine();
         Console.WriteLine("=== Gap analysis: similar artists you might be missing ===");
-        Console.WriteLine($"seed_artists: {seedArtists.Count} (with MBIDs)");
 
         var knownCanonical = new HashSet<string>(profile.Artists.Select(static a => a.CanonicalName), StringComparer.OrdinalIgnoreCase);
-        var similarCacheDir = Path.Combine(cacheDir, "similar-artists");
-        Directory.CreateDirectory(similarCacheDir);
 
-        using var similarLookup = new ListenBrainzSimilarArtistsLookup();
-        var queriedCount = 0;
-        var cachedCount = 0;
-
-        Console.Write("  loading similar artists: ");
-        foreach (var (mbid, name) in seedArtists)
+        // Find artists that appear as similar-to targets but are NOT in any of our listening data
+        var gapCandidates = new Dictionary<string, (string Name, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (subjectId, targets) in allSimilar)
         {
-            var cacheFile = Path.Combine(similarCacheDir, $"{mbid}.md");
-            if (File.Exists(cacheFile))
-            {
-                var cached = LoadSimilarArtistsCache(cacheFile);
-                if (cached.Count > 0) { allSimilar[mbid] = cached; cachedCount++; continue; }
-            }
+            var subjectItem = shelfItems.Get(subjectId);
+            var subjectName = subjectItem?.Name ?? subjectId;
 
-            try
+            foreach (var (targetId, targetName) in targets)
             {
-                var similar = await similarLookup.GetSimilarArtistsAsync(mbid);
-                if (similar.Count > 0) { allSimilar[mbid] = [.. similar]; SaveSimilarArtistsCache(cacheFile, name, similar); }
-                queriedCount++;
-                Console.Write(".");
-            }
-            catch (HttpRequestException) { Console.Write("x"); }
-        }
+                var targetCanonical = BeatTrackAnalysis.CanonicalizeArtistName(targetName);
+                if (knownCanonical.Contains(targetCanonical)) continue;
+                if (knownMisses.Contains(targetName)) continue;
 
-        Console.WriteLine($" ({cachedCount} cached, {queriedCount} queried)");
-
-        if (userSimilar.Count > 0)
-        {
-            var userSimilarCount = 0;
-            foreach (var artist in userSimilar.GetAllArtists())
-            {
-                var mbid = mbidCache.GetMbid(artist);
-                if (mbid is null) continue;
-                var similar = userSimilar.GetSimilar(artist);
-                foreach (var simName in similar)
-                {
-                    var simMbid = mbidCache.GetMbid(simName);
-                    if (simMbid is null) continue;
-                    if (!allSimilar.TryGetValue(mbid, out var list)) { list = []; allSimilar[mbid] = list; }
-                    if (!list.Any(s => s.ArtistMbid.Equals(simMbid, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        list.Add(new SimilarArtist(simMbid, simName, 500, "user", mbid));
-                        userSimilarCount++;
-                    }
-                }
-            }
-            if (userSimilarCount > 0) Console.WriteLine($"  merged {userSimilarCount} user-defined similarities into graph");
-        }
-
-        var aggregatedMap = new Dictionary<string, (string Name, int TotalScore, List<string> Seeds)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (seedMbid, similarList) in allSimilar)
-        {
-            var seedName = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-            foreach (var artist in similarList)
-            {
-                if (!aggregatedMap.TryGetValue(artist.ArtistMbid, out var entry)) { entry = (artist.Name, 0, []); aggregatedMap[artist.ArtistMbid] = entry; }
-                entry.Seeds.Add(seedName);
-                aggregatedMap[artist.ArtistMbid] = (entry.Name, entry.TotalScore + artist.Score, entry.Seeds);
+                if (!gapCandidates.TryGetValue(targetId, out var entry)) { entry = (targetName, []); gapCandidates[targetId] = entry; }
+                entry.Seeds.Add(subjectName);
             }
         }
 
-        var aggregated = aggregatedMap
-            .Where(kvp => !knownMbids.Contains(kvp.Key))
-            .Select(kvp => new AggregatedSimilarArtist(kvp.Key, kvp.Value.Name, kvp.Value.Seeds.Count, kvp.Value.TotalScore, kvp.Value.Seeds))
-            .OrderByDescending(static a => a.SeedCount).ThenByDescending(static a => a.TotalScore)
-            .ToList();
-
-        Console.WriteLine($"total_similar: {aggregatedMap.Count} artists found across {allSimilar.Count} seeds");
-
-        var gaps = aggregated
-            .Where(a => !knownCanonical.Contains(BeatTrackAnalysis.CanonicalizeArtistName(a.Name)))
-            .Where(a => !knownMisses.Contains(a.Name))
+        var gaps = gapCandidates.Values
+            .OrderByDescending(static g => g.Seeds.Count)
             .ToList();
 
         Console.WriteLine($"gaps: {gaps.Count} artists similar to your favorites but not in your data");
         Console.WriteLine();
 
         Console.WriteLine("top_gaps (similar to multiple favorites but never listened to):");
-        foreach (var gap in gaps.Take(30))
+        foreach (var gap in gaps.Where(static g => g.Seeds.Count >= 2).Take(30))
         {
-            var seeds = string.Join(", ", gap.SimilarToSeeds.Take(5));
-            Console.WriteLine($"  {gap.Name}  (similar to {gap.SeedCount} seeds: {seeds})");
+            var seeds = string.Join(", ", gap.Seeds.Distinct(StringComparer.OrdinalIgnoreCase).Take(5));
+            Console.WriteLine($"  {gap.Name}  (similar to {gap.Seeds.Count} of your artists: {seeds})");
         }
-        if (gaps.Count > 30) Console.WriteLine($"  ... and {gaps.Count - 30} more");
+    }
+    else
+    {
+        Console.WriteLine();
+        Console.WriteLine("(no similar-to data in shelf — run 'beat-track learn' to populate)");
     }
 
     // === Slice comparison: Last.fm vs YouTube ===
@@ -999,24 +952,20 @@ async Task<int> RunFullAnalysis()
         foreach (var s in surging.Take(30))
             Console.WriteLine($"  {s.Name}  (60d={s.Recent:N0}, prior={s.Prior:N0}, surge={s.SurgeRatio:N1}x)");
 
-        // Re-engagement
+        // Re-engagement: use shelf's similar-to graph
         Console.WriteLine();
         Console.WriteLine("=== Re-engage: forgotten favorites similar to your new interests ===");
         Console.WriteLine();
 
+        // Build inverted similar-to: target → list of subjects that consider it similar
         var invertedSimilar = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (seedMbid, similarList) in allSimilar)
+        foreach (var rel in similarRels)
         {
-            var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-            foreach (var sim in similarList)
-            {
-                if (!invertedSimilar.TryGetValue(sim.ArtistMbid, out var seeds)) { seeds = []; invertedSimilar[sim.ArtistMbid] = seeds; }
-                seeds.Add(seedName2);
-            }
+            if (rel.TargetId is null) continue;
+            if (!invertedSimilar.TryGetValue(rel.TargetId, out var seeds)) { seeds = []; invertedSimilar[rel.TargetId] = seeds; }
+            var subjectItem = shelfItems.Get(rel.SubjectId);
+            seeds.Add(subjectItem?.Name ?? rel.SubjectId);
         }
-
-        var mbidByCanonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in mbidCache.GetAll()) mbidByCanonical.TryAdd(entry.CanonicalName, entry.Mbid);
 
         var recentArtists = newInterests.Select(static kvp => (Name: kvp.Key, Weight: kvp.Value, Tag: "new"))
             .Concat(surging.Select(static s => (Name: s.Name, Weight: s.Recent, Tag: "surging")))
@@ -1031,8 +980,8 @@ async Task<int> RunFullAnalysis()
 
         foreach (var (name, weight, tag) in recentArtists)
         {
-            if (!mbidByCanonical.TryGetValue(name, out var artistMbid)) continue;
-            if (!invertedSimilar.TryGetValue(artistMbid, out var clusterSeeds)) continue;
+            var shelfId = ItemStore.Canonicalize(name);
+            if (!invertedSimilar.TryGetValue(shelfId, out var clusterSeeds)) continue;
             var dormantInCluster = clusterSeeds
                 .Where(sn => { var sc = BeatTrackAnalysis.CanonicalizeArtistName(sn); return dormantFavorites.ContainsKey(sc) && !knownMisses.Contains(sn); })
                 .Distinct(StringComparer.OrdinalIgnoreCase).Take(5).ToList();
@@ -1040,34 +989,31 @@ async Task<int> RunFullAnalysis()
             Console.WriteLine($"  {name} ({tag}, {weight:N0} plays) → revisit: {string.Join(", ", dormantInCluster)}");
         }
 
-        // Strange absences
+        // Strange absences: similar to active artists but never listened to
         Console.WriteLine();
         Console.WriteLine("=== Strange absences (similar to many of your active artists, but never listened to) ===");
         Console.WriteLine();
 
-        var active60dMbids = slice60.ArtistWeights.Keys
-            .Select(n => (Name: n, Mbid: mbidByCanonical.GetValueOrDefault(n)))
-            .Where(static x => x.Mbid is not null).ToList();
-
-        var absenceCandidates = new Dictionary<string, (string Name, double Score, List<string> ActiveNeighbors)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (activeName, activeMbid) in active60dMbids)
+        var absenceCandidates = new Dictionary<string, (string Name, List<string> ActiveNeighbors)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var activeCanonical in slice60.ArtistWeights.Keys)
         {
-            if (activeMbid is null || !allSimilar.TryGetValue(activeMbid, out var similarList)) continue;
-            foreach (var sim in similarList)
+            var activeShelfId = ItemStore.Canonicalize(activeCanonical);
+            if (!allSimilar.TryGetValue(activeShelfId, out var targets)) continue;
+
+            foreach (var (targetId, targetName) in targets)
             {
-                var simCanonical = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name);
-                if (slice365.ArtistWeights.ContainsKey(simCanonical)) continue;
-                if (knownMbids.Contains(sim.ArtistMbid)) continue;
-                if (!absenceCandidates.TryGetValue(sim.ArtistMbid, out var entry)) { entry = (sim.Name, 0, []); absenceCandidates[sim.ArtistMbid] = entry; }
-                entry.ActiveNeighbors.Add(activeName);
-                absenceCandidates[sim.ArtistMbid] = (entry.Name, entry.Score + sim.Score, entry.ActiveNeighbors);
+                var targetCanonical = BeatTrackAnalysis.CanonicalizeArtistName(targetName);
+                if (slice365.ArtistWeights.ContainsKey(targetCanonical)) continue;
+                if (knownMisses.Contains(targetName)) continue;
+
+                if (!absenceCandidates.TryGetValue(targetId, out var entry)) { entry = (targetName, []); absenceCandidates[targetId] = entry; }
+                entry.ActiveNeighbors.Add(activeCanonical);
             }
         }
 
         var strangeAbsences = absenceCandidates.Values
             .Where(static x => x.ActiveNeighbors.Count >= 3)
-            .Where(x => !knownMisses.Contains(x.Name))
-            .OrderByDescending(static x => x.ActiveNeighbors.Count).ThenByDescending(static x => x.Score).ToList();
+            .OrderByDescending(static x => x.ActiveNeighbors.Count).ToList();
 
         Console.WriteLine($"strange_absences: {strangeAbsences.Count} artists");
         foreach (var absence in strangeAbsences.Take(30))
@@ -1080,16 +1026,17 @@ async Task<int> RunFullAnalysis()
         Console.WriteLine();
         Console.WriteLine("dormant favorites you might revisit:");
         var suggestedDormant = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (seedMbid, similarList) in allSimilar)
+        foreach (var (subjectId, targets) in allSimilar)
         {
-            var seedName2 = seedNameByMbid.GetValueOrDefault(seedMbid, seedMbid);
-            var seedCanonical = BeatTrackAnalysis.CanonicalizeArtistName(seedName2);
-            if (!dormantFavorites.ContainsKey(seedCanonical)) continue;
-            var overlapCount = similarList.Count(sim => { var sc = BeatTrackAnalysis.CanonicalizeArtistName(sim.Name); return slice60.ArtistWeights.ContainsKey(sc); });
-            if (overlapCount >= 3 && !knownMisses.Contains(seedName2) && suggestedDormant.Add(seedCanonical))
+            var subjectItem = shelfItems.Get(subjectId);
+            var subjectName = subjectItem?.Name ?? subjectId;
+            var subjectCanonical = BeatTrackAnalysis.CanonicalizeArtistName(subjectName);
+            if (!dormantFavorites.ContainsKey(subjectCanonical)) continue;
+            var overlapCount = targets.Count(t => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(t.TargetName)));
+            if (overlapCount >= 3 && !knownMisses.Contains(subjectName) && suggestedDormant.Add(subjectCanonical))
             {
-                var overlapping = similarList.Where(sim => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(sim.Name))).Select(static sim => sim.Name).Take(5);
-                Console.WriteLine($"  {seedName2} ({dormantFavorites[seedCanonical]:N0} plays in 365d) — you're currently into: {string.Join(", ", overlapping)}");
+                var overlapping = targets.Where(t => slice60.ArtistWeights.ContainsKey(BeatTrackAnalysis.CanonicalizeArtistName(t.TargetName))).Select(static t => t.TargetName).Take(5);
+                Console.WriteLine($"  {subjectName} ({dormantFavorites[subjectCanonical]:N0} plays in 365d) — you're currently into: {string.Join(", ", overlapping)}");
             }
         }
     }
@@ -1119,25 +1066,3 @@ static string? FindDir(string? envOverride, params string[] searchPaths)
     return null;
 }
 
-
-static List<SimilarArtist> LoadSimilarArtistsCache(string filePath)
-{
-    var (_, rows) = MarkdownTableStore.Read(filePath);
-    var results = new List<SimilarArtist>(rows.Count);
-    foreach (var row in rows)
-    {
-        if (row.Length >= 3)
-        {
-            int.TryParse(row.Length > 2 ? row[2] : "0", out var score);
-            results.Add(new SimilarArtist(row[0], row[1], score, row.Length > 3 ? row[3] : null, null));
-        }
-    }
-    return results;
-}
-
-static void SaveSimilarArtistsCache(string filePath, string seedName, IReadOnlyList<SimilarArtist> artists)
-{
-    string[] headers = ["mbid", "name", "score", "type"];
-    var rows = artists.Select(a => new[] { a.ArtistMbid, a.Name, a.Score.ToString(), a.Type ?? "" });
-    MarkdownTableStore.Write(filePath, headers, rows);
-}
