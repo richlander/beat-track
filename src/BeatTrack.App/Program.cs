@@ -210,6 +210,38 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
     rootCommand.Subcommands.Add(cmd);
 }
 
+// --- seen-live ---
+{
+    var cmd = new Command("seen-live", "Record seeing an artist live");
+    var artistArg = new Argument<string>("artist") { Description = "Artist name" };
+    var dateOpt = new Option<string?>("--date") { Description = "Date of the show (e.g., 2024-03-15)" };
+    var venueOpt = new Option<string?>("--venue") { Description = "Venue name and city" };
+    cmd.Arguments.Add(artistArg);
+    cmd.Options.Add(dateOpt);
+    cmd.Options.Add(venueOpt);
+    cmd.SetAction((pr) =>
+    {
+        var artistName = pr.GetValue(artistArg)!;
+        var (item, _) = shelfItems.GetOrCreate(artistName, "artist", "music");
+
+        var parts = new List<string>();
+        var date = pr.GetValue(dateOpt);
+        if (date is not null) parts.Add(date);
+        var venue = pr.GetValue(venueOpt);
+        if (venue is not null) parts.Add(venue);
+        var reason = parts.Count > 0 ? string.Join(", ", parts) : null;
+
+        shelfRelationships.Add(item.Id, "seen-live", reason: reason);
+        shelfItems.Save();
+        shelfRelationships.Save();
+
+        var detail = reason is not null ? $" ({reason})" : "";
+        Console.WriteLine($"Recorded: {item.Name} seen live{detail}");
+        return 0;
+    });
+    rootCommand.Subcommands.Add(cmd);
+}
+
 // --- status ---
 {
     var cmd = new Command("status", "Show configuration and data availability");
