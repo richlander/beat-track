@@ -301,9 +301,12 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
 {
     var cmd = new Command("learn", "Populate shelf with artist metadata from MusicBrainz");
     var topOption = new Option<int>("--top") { Description = "Number of top artists to enrich", DefaultValueFactory = _ => 100 };
+    var artistsArg = new Argument<string[]>("artists") { Description = "Specific artists to enrich (overrides --top)", Arity = ArgumentArity.ZeroOrMore };
     cmd.Options.Add(topOption);
+    cmd.Arguments.Add(artistsArg);
     cmd.SetAction(async (pr, ct) =>
     {
+        var specificArtists = pr.GetValue(artistsArg);
         var topN = pr.GetValue(topOption);
 
         // Load scrobbles
@@ -311,15 +314,40 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
         if (scrobbles is null) return 1;
         Console.Error.WriteLine($"loaded: {scrobbles.Count:N0} scrobbles from {System.IO.Path.GetFileName(scrobblePath)}");
 
-        var topArtists = scrobbles
-            .Where(static s => s.TimestampMs > 0)
-            .GroupBy(s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName), StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(static g => g.Count())
-            .Take(topN)
-            .Select(static g => (Canonical: g.Key, DisplayName: g.First().ArtistName, Plays: g.Count()))
-            .ToList();
+        List<(string Canonical, string DisplayName, int Plays)> topArtists;
 
-        Console.Error.WriteLine($"top {topArtists.Count} artists by play count");
+        if (specificArtists is { Length: > 0 })
+        {
+            // Specific artists requested — look them up in scrobble data for play counts
+            var allArtists = scrobbles
+                .Where(static s => s.TimestampMs > 0)
+                .GroupBy(s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(static g => g.Key, static g => (DisplayName: g.First().ArtistName, Plays: g.Count()), StringComparer.OrdinalIgnoreCase);
+
+            topArtists = specificArtists
+                .Select(name =>
+                {
+                    var canonical = BeatTrackAnalysis.CanonicalizeArtistName(name);
+                    if (allArtists.TryGetValue(canonical, out var match))
+                        return (canonical, match.DisplayName, match.Plays);
+                    return (canonical, name, 0);
+                })
+                .ToList();
+
+            Console.Error.WriteLine($"{topArtists.Count} artists specified");
+        }
+        else
+        {
+            topArtists = scrobbles
+                .Where(static s => s.TimestampMs > 0)
+                .GroupBy(s => BeatTrackAnalysis.CanonicalizeArtistName(s.ArtistName), StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(static g => g.Count())
+                .Take(topN)
+                .Select(static g => (Canonical: g.Key, DisplayName: g.First().ArtistName, Plays: g.Count()))
+                .ToList();
+
+            Console.Error.WriteLine($"top {topArtists.Count} artists by play count");
+        }
 
         // Load MBID cache
         var cacheDir = BeatTrackPaths.CacheDir;
@@ -391,7 +419,7 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
                 if (country is not null) keywords.Add(country.ToLowerInvariant());
 
                 var item = shelfItems.Put(displayName, type == "person" ? "solo-artist" : "artist", "music",
-                    string.Join(", ", keywords), "musicbrainz");
+                    string.Join(", ", keywords), url: null, source: "musicbrainz");
                 shelfNameToId.TryAdd(displayName, item.Id);
                 shelfNameToId.TryAdd(canonical, item.Id);
 
