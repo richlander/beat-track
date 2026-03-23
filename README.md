@@ -111,7 +111,7 @@ echo "lastfm_user=YOUR_USERNAME" >> ~/.config/beat-track/config
 3. Run the snapshot tool:
 
 ```bash
-dotnet run --project src/BeatTrack.LastFm.App -- YOUR_USERNAME
+beat-track snapshot
 ```
 
 The API key is read from `~/.config/beat-track/config`, `LASTFM_API_KEY` env var, or stdin (in that order).
@@ -122,13 +122,13 @@ The snapshot JSON is written to stdout or to a path via `BEAT_TRACK_OUTPUT_PATH`
 
 ```bash
 # Show last 10 scrobbles (API key from config file)
-dotnet run --project src/BeatTrack.LastFm.App -- live -n 10 YOUR_USERNAME
+beat-track live -n 10
 
 # Follow mode — polls every 15s, ctrl-c to stop
-dotnet run --project src/BeatTrack.LastFm.App -- live -f YOUR_USERNAME
+beat-track live -f
 
 # Show last 5, then follow
-dotnet run --project src/BeatTrack.LastFm.App -- live -f -n 5 YOUR_USERNAME
+beat-track live -f -n 5
 ```
 
 ### Discogs collection (adds physical media)
@@ -152,28 +152,28 @@ BeatTrack classifies YouTube watch history to identify music content using known
 
 ```bash
 # General listening statistics — Eddington number, span, one-hit-wonders
-dotnet run --project src/BeatTrack.App -- stats
+beat-track stats
 
 # Top artists with time windows (7d, 30d, 90d, 365d, all)
-dotnet run --project src/BeatTrack.App -- top-artists --window 7d
-dotnet run --project src/BeatTrack.App -- top-artists --window 365d --limit 30
+beat-track top-artists --window 7d
+beat-track top-artists --window 365d --limit 30
 
 # Listening streaks — overall and per-artist
-dotnet run --project src/BeatTrack.App -- streaks
-dotnet run --project src/BeatTrack.App -- streaks --artist "Massive Attack"
+beat-track streaks
+beat-track streaks --artist "Massive Attack"
 
 # Cumulative play count curves over time
-dotnet run --project src/BeatTrack.App -- artist-velocity --top 10 --bucket yearly
-dotnet run --project src/BeatTrack.App -- artist-velocity --artists "Radiohead,Björk,Caribou" --bucket monthly
+beat-track artist-velocity --top 10 --bucket yearly
+beat-track artist-velocity --artists "Radiohead,Björk,Caribou" --bucket monthly
 
 # New discoveries — artists you started listening to within a time window
-dotnet run --project src/BeatTrack.App -- new-discoveries --window 7d
-dotnet run --project src/BeatTrack.App -- new-discoveries --window 30d
+beat-track new-discoveries --window 7d
+beat-track new-discoveries --window 30d
 
 # Artist depth — catalog explorers vs one-hit wonders
-dotnet run --project src/BeatTrack.App -- artist-depth --mode deep     # who you explore deeply
-dotnet run --project src/BeatTrack.App -- artist-depth --mode shallow  # one-hit wonders
-dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window 365d --min 10
+beat-track artist-depth --mode deep     # who you explore deeply
+beat-track artist-depth --mode shallow  # one-hit wonders
+beat-track artist-depth --mode all --window 365d --min 10
 ```
 
 ### Cross-source analysis (loads all data sources)
@@ -181,7 +181,7 @@ dotnet run --project src/BeatTrack.App -- artist-depth --mode all --window 365d 
 Run without a command for the full analysis:
 
 ```bash
-dotnet run --project src/BeatTrack.App
+beat-track
 ```
 
 This produces:
@@ -202,13 +202,13 @@ Track artists you've tried but don't connect with. These are automatically exclu
 
 ```bash
 # Add an artist (with optional reason)
-dotnet run --project src/BeatTrack.App -- miss add "Johnny Marr" --reason "tried multiple times, doesn't grab me"
+beat-track miss add "Johnny Marr" --reason "tried multiple times, doesn't grab me"
 
 # List all known misses
-dotnet run --project src/BeatTrack.App -- miss
+beat-track miss
 
 # Remove (give them another chance)
-dotnet run --project src/BeatTrack.App -- miss remove "Johnny Marr"
+beat-track miss remove "Johnny Marr"
 ```
 
 Known misses are stored at `~/.local/share/beat-track/known-misses.md`.
@@ -279,10 +279,10 @@ Re-export your data sources and replace the files. Caches persist across runs �
 
 ```bash
 # Re-download scrobble history from lastfmstats.com, then:
-dotnet run --project src/BeatTrack.App -- stats
+beat-track stats
 
 # Re-run full analysis with fresh data
-dotnet run --project src/BeatTrack.App
+beat-track
 ```
 
 ## Cache format

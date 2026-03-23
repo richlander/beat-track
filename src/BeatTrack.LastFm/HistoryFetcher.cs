@@ -32,26 +32,37 @@ public static class HistoryFetcher
             // Rate limit: ~5 requests/second
             await Task.Delay(200, cancellationToken);
 
-            try
+            const int maxRetries = 3;
+            for (var attempt = 1; ; attempt++)
             {
-                var response = await client.GetRecentTracksAsync(
-                    new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cancellationToken);
-                var result = response.ToBeatTrackListeningEvents();
-                allTracks.AddRange(result.Items.Where(static t => !t.IsNowPlaying));
-
-                if (page % 50 == 0 || page == totalPages)
+                try
                 {
-                    Console.Error.WriteLine($"  page {page}/{totalPages} ({allTracks.Count:N0} scrobbles)");
+                    var response = await client.GetRecentTracksAsync(
+                        new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cancellationToken);
+                    var result = response.ToBeatTrackListeningEvents();
+                    allTracks.AddRange(result.Items.Where(static t => !t.IsNowPlaying));
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    if (attempt > maxRetries)
+                    {
+                        Console.Error.WriteLine(
+                            $"  page {page} failed after {maxRetries} retries. " +
+                            "Last.fm may be temporarily unavailable — try again later.");
+                        return allTracks;
+                    }
+
+                    var backoffSeconds = (int)Math.Pow(2, attempt);
+                    Console.Error.WriteLine(
+                        $"  page {page} failed: {ex.Message} — retry {attempt}/{maxRetries} in {backoffSeconds}s...");
+                    await Task.Delay(backoffSeconds * 1000, cancellationToken);
                 }
             }
-            catch (HttpRequestException ex)
-            {
-                Console.Error.WriteLine($"  page {page} failed: {ex.Message} — retrying...");
-                await Task.Delay(3000, cancellationToken);
 
-                var retry = await client.GetRecentTracksAsync(
-                    new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cancellationToken);
-                allTracks.AddRange(retry.ToBeatTrackListeningEvents().Items.Where(static t => !t.IsNowPlaying));
+            if (page % 50 == 0 || page == totalPages)
+            {
+                Console.Error.WriteLine($"  page {page}/{totalPages} ({allTracks.Count:N0} scrobbles)");
             }
         }
 
