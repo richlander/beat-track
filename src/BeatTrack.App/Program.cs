@@ -35,7 +35,7 @@ static (IReadOnlyList<LastFmScrobble>? Scrobbles, string? Path) LoadScrobbles()
 
     if (statsPath is null) return (null, null);
 
-    return (ScrobbleStore.Load(statsPath), statsPath);
+    return (ScrobbleStore.Default.Load(statsPath), statsPath);
 }
 
 static int RunWithScrobbles(Func<IReadOnlyList<LastFmScrobble>, int> action)
@@ -339,7 +339,7 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
         else if (hasExisting && explicitPages is null)
         {
             // Incremental: fetch only new scrobbles since last pull, no page limit
-            var latestMs = ScrobbleStore.LatestTimestampMs(historyPath);
+            var latestMs = ScrobbleStore.Default.Last(historyPath)?.TimestampMs;
             if (latestMs is not null)
             {
                 fromUnixTime = latestMs.Value / 1000;
@@ -356,14 +356,14 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
         var fetched = await HistoryFetcher.FetchAsync(client, userName, fromUnixTime, maxPages, ct);
 
         // Merge with existing data: deduplicate, sort chronologically, write via temp file
-        var existing = hasExisting ? ScrobbleStore.Load(historyPath) : [];
+        var existing = hasExisting ? ScrobbleStore.Default.Load(historyPath) : [];
         var existingTimestamps = new HashSet<long>(existing.Select(s => s.TimestampMs));
         var newScrobbles = fetched.Where(s => !existingTimestamps.Contains(s.TimestampMs)).ToList();
 
         var merged = existing.Concat(newScrobbles).OrderBy(s => s.TimestampMs).ToList();
 
         var tempPath = historyPath + ".tmp";
-        ScrobbleStore.Write(tempPath, merged);
+        ScrobbleStore.Default.Write(tempPath, merged);
         File.Move(tempPath, historyPath, overwrite: true);
 
         if (existing.Count > 0)
@@ -868,7 +868,7 @@ async Task<int> RunFullAnalysis()
         Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
         Console.WriteLine();
 
-        var scrobbles = ScrobbleStore.Load(lastFmStatsPath);
+        var scrobbles = ScrobbleStore.Default.Load(lastFmStatsPath);
         Console.WriteLine($"lastfm_full_history: {scrobbles.Count} scrobbles");
 
         var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
