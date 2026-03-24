@@ -17,7 +17,7 @@
     <AssemblyName>beat-track</AssemblyName>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>beat-track</ToolCommandName>
-    <VersionPrefix>0.4.5</VersionPrefix>
+    <VersionPrefix>0.4.6</VersionPrefix>
     <PackageId>BeatTrack</PackageId>
     <ToolPackageRuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
     <PublishAot>true</PublishAot>
