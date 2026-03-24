@@ -37,13 +37,15 @@ public static class HistoryFetcher
             {
                 try
                 {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    cts.CancelAfter(TimeSpan.FromSeconds(30));
                     var response = await client.GetRecentTracksAsync(
-                        new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cancellationToken);
+                        new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cts.Token);
                     var result = response.ToBeatTrackListeningEvents();
                     allTracks.AddRange(result.Items.Where(static t => !t.IsNowPlaying));
                     break;
                 }
-                catch (HttpRequestException ex)
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
                 {
                     if (attempt > maxRetries)
                     {
@@ -53,9 +55,10 @@ public static class HistoryFetcher
                         return allTracks;
                     }
 
+                    var reason = ex is TaskCanceledException ? "timed out" : ex.Message;
                     var backoffSeconds = (int)Math.Pow(2, attempt);
                     Console.Error.WriteLine(
-                        $"  page {page} failed: {ex.Message} — retry {attempt}/{maxRetries} in {backoffSeconds}s...");
+                        $"  page {page} failed: {reason} — retry {attempt}/{maxRetries} in {backoffSeconds}s...");
                     await Task.Delay(backoffSeconds * 1000, cancellationToken);
                 }
             }
