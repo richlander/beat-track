@@ -5,27 +5,29 @@ namespace BeatTrack.LastFm;
 public static class HistoryFetcher
 {
     /// <summary>
-    /// Fetches the user's complete scrobble history via the Last.fm API.
-    /// Pages through all results at 200 per page with rate limiting.
-    /// Reports progress to stderr.
+    /// Fetches scrobble history via the Last.fm API.
+    /// When <paramref name="fromUnixTime"/> is set, only scrobbles after that timestamp are fetched.
+    /// When <paramref name="maxPages"/> is set, stops after that many pages.
+    /// Returns scrobbles in chronological order (oldest first).
     /// </summary>
-    public static async Task<IReadOnlyList<BeatTrackListeningEvent>> FetchAllAsync(
-        ILastFmClient client, string userName, CancellationToken cancellationToken = default)
+    public static async Task<IReadOnlyList<LastFmScrobble>> FetchAsync(
+        ILastFmClient client, string userName, long? fromUnixTime = null, int? maxPages = null, CancellationToken cancellationToken = default)
     {
         // First request: get total pages
         var firstResponse = await client.GetRecentTracksAsync(
-            new LastFmRecentTracksRequest(userName, Limit: 200, Page: 1), cancellationToken);
+            new LastFmRecentTracksRequest(userName, Limit: 200, Page: 1, FromUnixTime: fromUnixTime), cancellationToken);
         var firstPage = firstResponse.ToBeatTrackListeningEvents();
 
         var total = firstPage.Total ?? 0;
         const int pageSize = 200;
         var totalPages = firstPage.TotalPages ?? (total > 0 ? (int)Math.Ceiling((double)total / pageSize) : 1);
-        Console.Error.WriteLine($"Fetching {total:N0} scrobbles ({totalPages:N0} pages)...");
+        var pagesToFetch = maxPages is not null ? Math.Min(maxPages.Value, totalPages) : totalPages;
+        Console.Error.WriteLine($"Fetching {(maxPages is not null ? $"up to {pagesToFetch}" : $"{totalPages:N0}")} pages ({total:N0} available)...");
 
-        var allTracks = new List<BeatTrackListeningEvent>(total);
-        allTracks.AddRange(firstPage.Items.Where(static t => !t.IsNowPlaying));
+        var allTracks = new List<LastFmScrobble>(pagesToFetch * pageSize);
+        allTracks.AddRange(ToScrobbles(firstPage.Items));
 
-        for (var page = 2; page <= totalPages; page++)
+        for (var page = 2; page <= pagesToFetch; page++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -40,9 +42,9 @@ public static class HistoryFetcher
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     cts.CancelAfter(TimeSpan.FromSeconds(30));
                     var response = await client.GetRecentTracksAsync(
-                        new LastFmRecentTracksRequest(userName, Limit: 200, Page: page), cts.Token);
+                        new LastFmRecentTracksRequest(userName, Limit: 200, Page: page, FromUnixTime: fromUnixTime), cts.Token);
                     var result = response.ToBeatTrackListeningEvents();
-                    allTracks.AddRange(result.Items.Where(static t => !t.IsNowPlaying));
+                    allTracks.AddRange(ToScrobbles(result.Items));
                     break;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancellationToken.IsCancellationRequested)
@@ -69,45 +71,17 @@ public static class HistoryFetcher
             }
         }
 
+        // API returns newest-first; reverse to chronological order (oldest first)
+        allTracks.Reverse();
         return allTracks;
     }
 
-    /// <summary>
-    /// Writes scrobbles in lastfmstats CSV format (compatible with LastFmStatsCsvReader).
-    /// </summary>
-    public static void WriteCsv(TextWriter writer, IEnumerable<BeatTrackListeningEvent> tracks, string userName)
-    {
-        writer.WriteLine($"Artist;Album;AlbumId;Track;Date#{userName}");
-
-        foreach (var track in tracks)
-        {
-            if (track.ArtistName is null)
-            {
-                continue;
-            }
-
-            var artist = CsvQuote(track.ArtistName);
-            var album = CsvQuote(track.AlbumName ?? "");
-            var albumId = CsvQuote("");
-            var trackName = CsvQuote(track.TrackName ?? "");
-
-            // API returns seconds, CSV format uses milliseconds
-            var dateMs = track.PlayedAtUnixTime is not null
-                ? (track.PlayedAtUnixTime.Value * 1000).ToString()
-                : "";
-            var date = CsvQuote(dateMs);
-
-            writer.WriteLine($"{artist};{album};{albumId};{trackName};{date}");
-        }
-    }
-
-    private static string CsvQuote(string value)
-    {
-        if (value.Contains('"'))
-        {
-            value = value.Replace("\"", "\"\"");
-        }
-
-        return $"\"{value}\"";
-    }
+    private static IEnumerable<LastFmScrobble> ToScrobbles(IEnumerable<BeatTrackListeningEvent> events) =>
+        events
+            .Where(static t => !t.IsNowPlaying && t.ArtistName is not null)
+            .Select(static t => new LastFmScrobble(
+                t.ArtistName!,
+                t.AlbumName,
+                t.TrackName,
+                (t.PlayedAtUnixTime ?? 0) * 1000));
 }

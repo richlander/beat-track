@@ -34,8 +34,8 @@ public static class StatusQuery
         // Data sources
         var dataSources = new List<StatusItemRow>();
 
-        var scrobbleCsv = FindFile("lastfmstats-*.csv", searchDirs.Select(d => Path.Combine(d, "lastfmstats")).ToArray());
-        dataSources.Add(new() { Name = "lastfm_scrobbles", Value = FormatSource(scrobbleCsv) });
+        var scrobbleFile = FindFile("scrobbles-*.jsonl", searchDirs.Select(d => Path.Combine(d, "lastfmstats")).ToArray());
+        dataSources.Add(new() { Name = "lastfm_scrobbles", Value = FormatSource(scrobbleFile) });
 
         var snapshot = FindFile("*-snapshot.json", searchDirs);
         dataSources.Add(new() { Name = "lastfm_snapshot", Value = FormatSource(snapshot) });
@@ -79,17 +79,17 @@ public static class StatusQuery
 
         // Suggestions
         var suggestions = new List<SuggestionRow>();
-        if (scrobbleCsv is null)
-            suggestions.Add(new() { Action = "Export scrobble history from lastfmstats.com and place in " + Path.Combine(dataDir, "lastfmstats") + "/" });
+        if (scrobbleFile is null)
+            suggestions.Add(new() { Action = "Run 'beat-track pull' to fetch scrobble history from Last.fm" });
         if (config.LastFmApiKey is null && Environment.GetEnvironmentVariable("LASTFM_API_KEY") is null)
             suggestions.Add(new() { Action = $"Add lastfm_api_key to {configFile} for snapshot fetching and live feed" });
-        if (scrobbleCsv is not null && snapshot is null && (config.LastFmApiKey is not null || Environment.GetEnvironmentVariable("LASTFM_API_KEY") is not null))
+        if (scrobbleFile is not null && snapshot is null && (config.LastFmApiKey is not null || Environment.GetEnvironmentVariable("LASTFM_API_KEY") is not null))
             suggestions.Add(new() { Action = "Run the Last.fm snapshot tool to enable full analysis with MBIDs" });
-        if (scrobbleCsv is not null)
+        if (scrobbleFile is not null)
         {
-            var age = DateTime.Now - File.GetLastWriteTime(scrobbleCsv);
+            var age = DateTime.Now - File.GetLastWriteTime(scrobbleFile);
             if (age.TotalDays > 30)
-                suggestions.Add(new() { Action = $"Scrobble CSV is {(int)age.TotalDays} days old — consider re-exporting from lastfmstats.com" });
+                suggestions.Add(new() { Action = $"Scrobble data is {(int)age.TotalDays} days old — run 'beat-track pull' to update" });
         }
         if (snapshot is not null)
         {

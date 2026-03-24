@@ -29,14 +29,13 @@ static (IReadOnlyList<LastFmScrobble>? Scrobbles, string? Path) LoadScrobbles()
     var homeData = BeatTrackPaths.DataDir;
 
     var statsPath = FindByPattern(
-        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-        "lastfmstats-*.csv",
+        Environment.GetEnvironmentVariable("BEAT_TRACK_SCROBBLES"),
+        "scrobbles-*.jsonl",
         System.IO.Path.Combine(workspaceData, "lastfmstats"), System.IO.Path.Combine(homeData, "lastfmstats"));
 
     if (statsPath is null) return (null, null);
 
-    using var csvReader = File.OpenText(statsPath);
-    return (LastFmStatsCsvReader.ParseCsv(csvReader), statsPath);
+    return (ScrobbleStore.Load(statsPath), statsPath);
 }
 
 static int RunWithScrobbles(Func<IReadOnlyList<LastFmScrobble>, int> action)
@@ -44,7 +43,7 @@ static int RunWithScrobbles(Func<IReadOnlyList<LastFmScrobble>, int> action)
     var (scrobbles, path) = LoadScrobbles();
     if (scrobbles is null)
     {
-        Console.Error.WriteLine("No lastfmstats CSV found. Run 'beat-track history' first or set BEAT_TRACK_LASTFM_STATS_CSV.");
+        Console.Error.WriteLine("No scrobble data found. Run 'beat-track pull' first or set BEAT_TRACK_SCROBBLES.");
         return 1;
     }
 
@@ -311,18 +310,65 @@ static (LastFmClient? Client, string? UserName, HttpClient? Http) CreateApiClien
 {
     var cmd = new Command("pull", "Pull latest scrobble history from Last.fm");
     cmd.Aliases.Add("history");
+    var pagesOption = new Option<int?>("--pages") { Description = "Max pages to fetch (200 scrobbles/page). Default: 10 for first pull, unlimited for incremental" };
+    var fullOption = new Option<bool>("--full") { Description = "Pull entire history (no page limit)" };
+    cmd.Options.Add(pagesOption);
+    cmd.Options.Add(fullOption);
     cmd.SetAction(async (pr, ct) =>
     {
         var (client, userName, http) = CreateApiClient();
         if (client is null) return 1;
         using var _ = http;
         if (string.IsNullOrWhiteSpace(userName)) { Console.Error.WriteLine("Set lastfm_user in config or LASTFM_USER env var."); return 1; }
-        var historyTracks = await HistoryFetcher.FetchAllAsync(client, userName);
         var historyDir = System.IO.Path.Combine(BeatTrackPaths.DataDir, "lastfmstats");
         Directory.CreateDirectory(historyDir);
-        var historyPath = System.IO.Path.Combine(historyDir, $"lastfmstats-{userName}.csv");
-        using (var writer = new StreamWriter(historyPath)) { HistoryFetcher.WriteCsv(writer, historyTracks, userName); }
-        Console.WriteLine($"scrobbles: {historyTracks.Count:N0}");
+        var historyPath = System.IO.Path.Combine(historyDir, $"scrobbles-{userName}.jsonl");
+
+        var forceFullPull = pr.GetValue(fullOption);
+        var explicitPages = pr.GetValue(pagesOption);
+        var hasExisting = File.Exists(historyPath) && new FileInfo(historyPath).Length > 0;
+
+        long? fromUnixTime = null;
+        int? maxPages;
+
+        if (forceFullPull)
+        {
+            // Full pull: no page limit, start fresh
+            maxPages = null;
+        }
+        else if (hasExisting && explicitPages is null)
+        {
+            // Incremental: fetch only new scrobbles since last pull, no page limit
+            var latestMs = ScrobbleStore.LatestTimestampMs(historyPath);
+            if (latestMs is not null)
+            {
+                fromUnixTime = latestMs.Value / 1000;
+                Console.Error.WriteLine($"Incremental pull: fetching since {DateTimeOffset.FromUnixTimeSeconds(fromUnixTime.Value):u}");
+            }
+            maxPages = null;
+        }
+        else
+        {
+            // First pull or explicit --pages: fetch recent history with page limit
+            maxPages = explicitPages ?? 10;
+        }
+
+        var fetched = await HistoryFetcher.FetchAsync(client, userName, fromUnixTime, maxPages, ct);
+
+        // Merge with existing data: deduplicate, sort chronologically, write via temp file
+        var existing = hasExisting ? ScrobbleStore.Load(historyPath) : [];
+        var existingTimestamps = new HashSet<long>(existing.Select(s => s.TimestampMs));
+        var newScrobbles = fetched.Where(s => !existingTimestamps.Contains(s.TimestampMs)).ToList();
+
+        var merged = existing.Concat(newScrobbles).OrderBy(s => s.TimestampMs).ToList();
+
+        var tempPath = historyPath + ".tmp";
+        ScrobbleStore.Write(tempPath, merged);
+        File.Move(tempPath, historyPath, overwrite: true);
+
+        if (existing.Count > 0)
+            Console.WriteLine($"new_scrobbles: {newScrobbles.Count:N0}");
+        Console.WriteLine($"scrobbles: {merged.Count:N0}");
         Console.WriteLine($"written_to: {historyPath}");
         return 0;
     });
@@ -812,8 +858,8 @@ async Task<int> RunFullAnalysis()
 
     // === Slice comparison: Last.fm vs YouTube ===
     var lastFmStatsPath = FindByPattern(
-        Environment.GetEnvironmentVariable("BEAT_TRACK_LASTFM_STATS_CSV"),
-        "lastfmstats-*.csv",
+        Environment.GetEnvironmentVariable("BEAT_TRACK_SCROBBLES"),
+        "scrobbles-*.jsonl",
         Path.Combine(workspaceData, "lastfmstats"), Path.Combine(homeData, "lastfmstats"));
 
     if (lastFmStatsPath is not null && youTubeSnapshot is not null)
@@ -822,8 +868,7 @@ async Task<int> RunFullAnalysis()
         Console.WriteLine("=== Slice comparison: Last.fm vs YouTube ===");
         Console.WriteLine();
 
-        using var scrobbleReader = File.OpenText(lastFmStatsPath);
-        var scrobbles = LastFmStatsCsvReader.ParseCsv(scrobbleReader);
+        var scrobbles = ScrobbleStore.Load(lastFmStatsPath);
         Console.WriteLine($"lastfm_full_history: {scrobbles.Count} scrobbles");
 
         var lastFmWeights = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -1097,4 +1142,3 @@ static string? FindDir(string? envOverride, params string[] searchPaths)
         if (Directory.Exists(path)) return path;
     return null;
 }
-
